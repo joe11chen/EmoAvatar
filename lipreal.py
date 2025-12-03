@@ -15,6 +15,7 @@
 #  limitations under the License.
 ###############################################################################
 
+from dataclasses import dataclass
 import math
 import torch
 import numpy as np
@@ -181,9 +182,20 @@ def inference(quit_event,batch_size,face_list_cycle,audio_feat_queue,audio_out_q
             #print('total batch time:',time.perf_counter()-starttime)            
     logger.info('lipreal inference processor stop')
 
+@dataclass
+class AvatarMeta:
+    frame_list_cycle: list
+    face_list_cycle: list
+    coord_list_cycle: list
+
+class AvatarEnum:
+     DEFAULT = 'default'
+     CONFUSE = 'confuse'
+     HAPPY = 'happy'
+
 class LipReal(BaseReal):
     @torch.no_grad()
-    def __init__(self, opt, model, avatar):
+    def __init__(self, opt, model, avatar, multi_avatar=False):
         super().__init__(opt)
         #self.opt = opt # shared with the trainer's opt to support in-place modification of rendering parameters.
         # self.W = opt.W
@@ -202,20 +214,36 @@ class LipReal(BaseReal):
         self.asr.warm_up()
         
         self.render_event = mp.Event()
-    
+        self.multi_avatar = multi_avatar
+        if self.multi_avatar:
+            self.avatars = {key: AvatarMeta(frame_list_cycle=frame_list,
+                                            face_list_cycle=face_list,
+                                            coord_list_cycle=coord_list)
+             for key, (frame_list, face_list, coord_list) in avatar.items()}
     # def __del__(self):
     #     logger.info(f'lipreal({self.sessionid}) delete')
 
     def paste_back_frame(self,pred_frame,idx:int):
-        bbox = self.coord_list_cycle[idx]
-        combine_frame = copy.deepcopy(self.frame_list_cycle[idx])
-        #combine_frame = copy.deepcopy(self.imagecache.get_img(idx))
-        y1, y2, x1, x2 = bbox
-        res_frame = cv2.resize(pred_frame.astype(np.uint8),(x2-x1,y2-y1))
-        #combine_frame = get_image(ori_frame,res_frame,bbox)
-        #t=time.perf_counter()
-        combine_frame[y1:y2, x1:x2] = res_frame
-        return combine_frame
+        if self.multi_avatar:
+            bbox = self.avatars[AvatarEnum.DEFAULT].coord_list_cycle[idx]
+            combine_frame = copy.deepcopy(self.avatars[AvatarEnum.DEFAULT].frame_list_cycle[idx])
+            #combine_frame = copy.deepcopy(self.imagecache.get_img(idx))
+            y1, y2, x1, x2 = bbox
+            res_frame = cv2.resize(pred_frame.astype(np.uint8),(x2-x1,y2-y1))
+            #combine_frame = get_image(ori_frame,res_frame,bbox)
+            #t=time.perf_counter()
+            combine_frame[y1:y2, x1:x2] = res_frame
+            return combine_frame
+        else:
+            bbox = self.coord_list_cycle[idx]
+            combine_frame = copy.deepcopy(self.frame_list_cycle[idx])
+            #combine_frame = copy.deepcopy(self.imagecache.get_img(idx))
+            y1, y2, x1, x2 = bbox
+            res_frame = cv2.resize(pred_frame.astype(np.uint8),(x2-x1,y2-y1))
+            #combine_frame = get_image(ori_frame,res_frame,bbox)
+            #t=time.perf_counter()
+            combine_frame[y1:y2, x1:x2] = res_frame
+            return combine_frame
             
     def render(self,quit_event,loop=None,audio_track=None,video_track=None):
         #if self.opt.asr:
