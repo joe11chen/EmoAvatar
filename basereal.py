@@ -15,6 +15,8 @@
 #  limitations under the License.
 ###############################################################################
 
+import copy
+from dataclasses import dataclass
 import math
 import torch
 import numpy as np
@@ -37,8 +39,10 @@ from av import AudioFrame, VideoFrame
 
 import av
 from fractions import Fraction
+from baseasr import BaseASR
 
-from ttsreal import EdgeTTS,SovitsTTS,XTTS,CosyVoiceTTS,FishTTS,TencentTTS,DoubaoTTS,IndexTTS2,AzureTTS
+from data import EMOTION
+from ttsreal import BaseTTS, EdgeTTS,SovitsTTS,XTTS,CosyVoiceTTS,FishTTS,TencentTTS,DoubaoTTS,IndexTTS2,AzureTTS
 from logger import logger
 
 from tqdm import tqdm
@@ -67,7 +71,69 @@ def play_audio(quit_event,queue):
         stream.write(queue.get(block=True))
     stream.close()
 
+
+def draw_info(img, text_to_add, margin=10, line_spacing_factor=1.5):
+    if img is None or len(img.shape) < 2:
+        print("错误：传入的不是有效的 OpenCV 图像数组。")
+        return None
+
+    img_height, img_width = img.shape[:2]
+    font = cv2.FONT_HERSHEY_SIMPLEX
+
+    font_scale = max(img_height / 1700, 0.3) 
+    color = (0, 0, 255) 
+    thickness = max(int(font_scale * 2), 1) 
+
+    lines = text_to_add.split('\n')
+
+    max_line_width = 0
+    (_, text_height), baseline = cv2.getTextSize(
+        "S", font, font_scale, thickness
+    )
+    for line in lines:
+        (w, h), _ = cv2.getTextSize(line, font, font_scale, thickness)
+        if w > max_line_width:
+            max_line_width = w
+            
+    line_height = int((text_height + baseline) * line_spacing_factor)
+    total_text_block_height = len(lines) * line_height - (line_height - text_height - baseline) # 减去最后一行的额外间距
+    org_x_base = img_width - max_line_width - margin
+    org_y_start = margin + text_height # 加上 text_height 确保第一行基线位于正确位置
+    current_y = org_y_start
+
+    try:
+        if org_x_base < 0 or org_y_start > img_height:
+             print("警告：文字过大或边距设置不当，可能超出图像范围。")
+             org_x_base = margin
+        for line in lines:
+            if not line:
+                current_y += line_height
+                continue
+            (line_w, _), _ = cv2.getTextSize(line, font, font_scale, thickness)
+            org_x_current = org_x_base + (max_line_width - line_w)
+            org = (org_x_current, current_y)
+            cv2.putText(
+                img,
+                line,
+                org,
+                font,
+                font_scale,
+                color,
+                thickness,
+                cv2.LINE_AA 
+            )
+            current_y += line_height 
+        return img
+    except Exception as e:
+        print(f"绘制文字时发生错误: {e}")
+        return None
+
+
 class BaseReal:
+
+    tts: BaseTTS
+    asr: BaseASR
+    
     def __init__(self, opt):
         self.opt = opt
         self.sample_rate = 16000
@@ -107,6 +173,11 @@ class BaseReal:
         self.custom_index = {}
         self.custom_opt = {}
         self.__loadcustom()
+
+        self.avatars: dict[str, any]
+
+        self.transitions: dict[EMOTION, dict[EMOTION, any]] = None
+
 
     def put_msg_txt(self,msg,datainfo:dict={}):
         self.tts.put_msg_txt(msg,datainfo)
@@ -166,7 +237,7 @@ class BaseReal:
             self.custom_index[key]=0
 
     def notify(self,eventpoint):
-        logger.info("notify:%s",eventpoint)
+        logger.debug("notify:%s",eventpoint)
 
     def start_recording(self):
         """开始录制视频"""
@@ -298,7 +369,7 @@ class BaseReal:
             self.custom_index[audiotype] = 0
 
     def process_frames(self,quit_event,loop=None,audio_track=None,video_track=None):
-        enable_transition = False  # 设置为False禁用过渡效果，True启用
+        enable_transition = True  # 设置为False禁用过渡效果，True启用
         
         if enable_transition:
             _last_speaking = False
@@ -315,12 +386,29 @@ class BaseReal:
             audio_thread = Thread(target=play_audio, args=(quit_event,audio_tmp,), daemon=True, name="pyaudio_stream")
             audio_thread.start()
         
+        prev_status = None
+        cnt = 0
+        
         while not quit_event.is_set():
             try:
-                res_frame,idx,audio_frames = self.res_frame_queue.get(block=True, timeout=1)
+                res_frame,face_index,audio_frames = self.res_frame_queue.get(block=True, timeout=1)
             except queue.Empty:
                 continue
             
+            if self.multi_avatar:
+                idx = face_index[0]
+                emo = face_index[1]
+            # if audio_frames[0][2] is not None:
+            #     emo = audio_frames[0][2].get('emo', Avatars.DEFAULT)
+            status = audio_frames[0][2].get('status', '') if audio_frames[0][2] is not None else ''
+            if status != prev_status:
+                print(f'[INFO] status: {prev_status} 持续 {cnt*2}音频帧')
+                prev_status = status
+                cnt = 0
+            cnt+=1
+
+            prev_status = status
+
             if enable_transition:
                 # 检测状态变化
                 current_speaking = not (audio_frames[0][1]!=0 and audio_frames[1][1]!=0)
@@ -329,7 +417,15 @@ class BaseReal:
                     _transition_start = time.time()
                 _last_speaking = current_speaking
 
-            if audio_frames[0][1]!=0 and audio_frames[1][1]!=0: #全为静音数据，只需要取fullimg
+            if status == "transition":
+                prev, now = audio_frames[0][2].get("from"), audio_frames[0][2].get("to")
+                transition_frame_idx = audio_frames[0][2].get("transition_frame_idx", None) // 2
+                print(f'[INFO] Transition detected: {prev} → {now}, frame idx: {transition_frame_idx}')
+                if transition_frame_idx is None :
+                    logger.error("Transition status found but no transition_frame_idx provided. Skipping transition frame.")
+                combine_frame = self.transitions[prev][now][transition_frame_idx]
+
+            elif audio_frames[0][1]!=0 and audio_frames[1][1]!=0: #全为静音数据，只需要取fullimg
                 self.speaking = False
                 audiotype = audio_frames[0][1]
                 if self.custom_index.get(audiotype) is not None: #有自定义视频
@@ -337,7 +433,10 @@ class BaseReal:
                     target_frame = self.custom_img_cycle[audiotype][mirindex]
                     self.custom_index[audiotype] += 1
                 else:
-                    target_frame = self.frame_list_cycle[idx]
+                    if self.multi_avatar:
+                        target_frame = self.avatars[emo].frame_list_cycle[idx]
+                    else:
+                        target_frame = self.frame_list_cycle[idx]
                 
                 if enable_transition:
                     # 说话→静音过渡
@@ -353,7 +452,7 @@ class BaseReal:
             else:
                 self.speaking = True
                 try:
-                    current_frame = self.paste_back_frame(res_frame,idx)
+                    current_frame = self.paste_back_frame(res_frame, idx, emo)
                 except Exception as e:
                     logger.warning(f"paste_back_frame error: {e}")
                     continue
@@ -368,7 +467,12 @@ class BaseReal:
                     _last_speaking_frame = combine_frame.copy()
                 else:
                     combine_frame = current_frame
-
+            combine_frame = copy.deepcopy(combine_frame)
+            extra_text = str(audio_frames[0][2])
+            # 过滤中文
+            import re
+            extra_text = re.sub(r'[\u4e00-\u9fa5]', '', extra_text)
+            # combine_frame = draw_info(combine_frame, "Emotion: {}, Frame idx: {}\nEvent: {}\n".format(emo, idx, extra_text))
             cv2.putText(combine_frame, "LiveTalking", (10, 20), cv2.FONT_HERSHEY_SIMPLEX, 0.3, (128,128,128), 1)
             if self.opt.transport=='virtualcam':
                 if vircam==None:

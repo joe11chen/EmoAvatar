@@ -14,6 +14,15 @@ import torch
 # from face_alignment import NetworkSize
 # from mmpose.apis import inference_topdown, init_model
 # from mmpose.structures import merge_data_samples
+
+_old_torch_load = torch.load
+
+def _patched_torch_load(*args, **kwargs):
+    kwargs.setdefault("weights_only", False)
+    return _old_torch_load(*args, **kwargs)
+
+torch.load = _patched_torch_load
+
 from tqdm import tqdm
 
 from musetalk.utils.preprocessing import get_landmark_and_bbox, read_imgs

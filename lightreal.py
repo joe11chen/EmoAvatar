@@ -32,7 +32,6 @@ from queue import Queue
 from threading import Thread, Event
 import torch.multiprocessing as mp
 
-
 from hubertasr import HubertASR
 import asyncio
 from av import AudioFrame, VideoFrame

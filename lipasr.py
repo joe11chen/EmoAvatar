@@ -24,6 +24,7 @@ from queue import Queue
 #import multiprocessing as mp
 
 from baseasr import BaseASR
+from logger import logger
 from wav2lip import audio
 
 class LipASR(BaseASR):
@@ -31,15 +32,29 @@ class LipASR(BaseASR):
     def run_step(self):
         ############################################## extract audio feature ##############################################
         # get a frame of audio
+        # logger.info('total frame size before get: {}, batch_size: {}'.format(
+            # len(self.frames), self.batch_size))
+        idle = True
         for _ in range(self.batch_size*2):
             frame,type,eventpoint = self.get_audio_frame()
+            if eventpoint.get("asr_status","idle") == "streaming":
+                idle = False
             self.frames.append(frame)
             # put to output
             self.output_queue.put((frame,type,eventpoint))
-        # context not enough, do not run network.
+        
+
         if len(self.frames) <= self.stride_left_size + self.stride_right_size:
             return
         
+        if not idle:
+            logger.info('asr batch start, total frame size: {}, batch_size: {}, last event: {}'.format(
+                 len(self.frames), self.batch_size, eventpoint))     
+
+            
+            # if eventpoint
+
+            
         inputs = np.concatenate(self.frames) # [N * chunk]
         mel = audio.melspectrogram(inputs)
         #print(mel.shape[0],mel.shape,len(mel[0]),len(self.frames))
@@ -59,6 +74,9 @@ class LipASR(BaseASR):
                 mel_chunks.append(mel[:, start_idx : start_idx + mel_step_size])
             i += 1
         self.feat_queue.put(mel_chunks)
-        
-        # discard the old part to save memory
+        # if not idle:
+        #     logger.info('asr end, asr mel chunks size: {}'.format(len(mel_chunks)))
+        # logger.info('asr batch end, mel chunks size: {}'.format(len(mel_chunks)))
+        # remove used frames
         self.frames = self.frames[-(self.stride_left_size + self.stride_right_size):]
+  

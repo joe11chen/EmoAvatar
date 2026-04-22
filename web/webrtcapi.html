@@ -80,7 +80,7 @@
       var message = $('#message').val();
       console.log('Sending: ' + message);
       console.log('sessionid: ',document.getElementById('sessionid').value);
-      fetch('/human', {
+      fetch('/ ', {
             body: JSON.stringify({
                 text: message,
                 type: 'echo',

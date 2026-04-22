@@ -15,6 +15,8 @@
 #  limitations under the License.
 ###############################################################################
 
+from collections import defaultdict
+from dataclasses import dataclass
 import math
 import torch
 import numpy as np
@@ -34,6 +36,7 @@ from queue import Queue
 from threading import Thread, Event
 import torch.multiprocessing as mp
 
+from data import EMOTION
 from musetalk.utils.utils import get_file_type,get_video_fps,datagen
 #from musetalk.utils.preprocessing import get_landmark_and_bbox,read_imgs,coord_placeholder
 from musetalk.myutil import get_image_blending
@@ -47,6 +50,66 @@ from basereal import BaseReal
 
 from tqdm import tqdm
 from logger import logger
+
+@dataclass
+class AvatarMeta:
+    frame_list_cycle: list
+    mask_list_cycle: list
+    coord_list_cycle: list
+    mask_coords_list_cycle: list
+    input_latent_list_cycle: list
+    length: int
+    index: int = 0
+        
+def load_multi_avatar(avatar_ids: list[EMOTION]):
+    avatars = {}
+    for avatar_id in avatar_ids:
+        frame_list_cycle, mask_list_cycle, coord_list_cycle, mask_coords_list_cycle, input_latent_list_cycle = load_avatar(avatar_id.value)
+        avatars[avatar_id] = AvatarMeta(frame_list_cycle=frame_list_cycle,
+                                        mask_list_cycle=mask_list_cycle,
+                                        coord_list_cycle=coord_list_cycle,
+                                        mask_coords_list_cycle=mask_coords_list_cycle,
+                                        input_latent_list_cycle=input_latent_list_cycle,
+                                        length=len(input_latent_list_cycle),
+                                        )
+    return avatars
+
+def load_transitions():
+    transition_path = "./data/transitions"
+
+    transitions = {}
+    for emo1 in EMOTION:
+        transitions[emo1] = {}
+        for emo2 in EMOTION:
+            if emo1 != emo2:
+                if os.path.exists(os.path.join(transition_path, f"{emo1.name}2{emo2.name}")):
+                    logger.info(f"Loading transition frames for {emo1} to {emo2}")
+                    image_list = glob.glob(os.path.join(transition_path, f"{emo1.name}2{emo2.name}", '*.[jpJP][pnPN]*[gG]'))
+                    image_list = sorted(image_list, key=lambda x: int(os.path.splitext(os.path.basename(x))[0].split('_')[-1]))
+                    frames = read_imgs(image_list)
+                    transitions[emo1][emo2] = frames
+                else:
+                    logger.warning(f"No transition frames found for {emo1} to {emo2}. Expected folder: {os.path.join(transition_path, f'{emo1.name}2{emo2.name}')}")
+                    transitions[emo1][emo2] = []
+
+
+    # for file in os.listdir(transition_path):
+    #     emotions = file.split('2')
+    #     if len(emotions) != 2:
+    #         logger.warning(f"Invalid transition folder name: {file}. Expected format 'emo1toemo2'. Skipping.")
+    #         continue
+        
+    #     if emotions[0] not in EMOTION.__members__ or emotions[1] not in EMOTION.__members__:
+    #         print(f"Emotion1: {emotions[0]}, Emotion2: {emotions[1]}")
+    #         logger.warning(f"Invalid emotions in transition folder name: {file}. Expected emotions from {list(EMOTION.__members__.keys())}. Skipping.")
+    #         continue
+
+    #     image_list = glob.glob(os.path.join(transition_path, file, '*.[jpJP][pnPN]*[gG]'))
+    #     image_list = sorted(image_list, key=lambda x: int(os.path.splitext(os.path.basename(x))[0].split('_')[-1]))
+    #     frames = read_imgs(image_list)
+    #     transitions[emotions[0]][emotions[1]] = frames
+
+    return transitions
 
 def load_model():
     # load model weights
@@ -208,9 +271,91 @@ def inference(quit_event,batch_size,input_latent_list_cycle,audio_feat_queue,aud
             #print('total batch time:',time.perf_counter()-starttime)            
     logger.info('musereal inference processor stop')
 
+
+
+@torch.no_grad()
+def multi_avatar_inference(quit_event,batch_size,avatars: dict[str, AvatarMeta],audio_feat_queue,audio_out_queue,res_frame_queue,vae,unet,pe,timesteps): #vae, unet, pe,timesteps
+    count=0
+    counttime=0
+    logger.info('start multi inference')
+    while not quit_event.is_set():
+        starttime=time.perf_counter()
+        try:
+            whisper_chunks = audio_feat_queue.get(block=True, timeout=1)
+        except queue.Empty:
+            continue
+        is_all_silence=True
+        audio_frames = []
+        for _ in range(batch_size*2):
+            frame,type,eventpoint = audio_out_queue.get()
+            audio_frames.append((frame,type,eventpoint))
+            if type==0:
+                is_all_silence=False
+
+        if is_all_silence:
+            for i in range(batch_size):
+                res_frame_queue.put((None,(__mirror_index(avatars[EMOTION.DEFAULT].length,avatars[EMOTION.DEFAULT].index), EMOTION.DEFAULT),audio_frames[i*2:i*2+2]))
+                avatars[EMOTION.DEFAULT].index += 1
+        else:
+            # print('infer=======')
+            t=time.perf_counter()
+            whisper_batch = np.stack(whisper_chunks)
+            latent_batch = []
+            face_indexes = []
+            for i in range(batch_size):
+                try:
+                    assert audio_frames[i*2][2].get("emo") == audio_frames[i*2+1][2].get("emo")
+                    emo = audio_frames[i*2][2].get("emo")
+                except Exception:
+                    logger.error("Emotion error: {}".format(Exception))
+                    emo = EMOTION.DEFAULT
+                idx = __mirror_index(avatars[emo].length,avatars[emo].index)
+                avatars[emo].index += 1
+                latent = avatars[emo].input_latent_list_cycle[idx]
+                latent_batch.append(latent)
+                face_indexes.append((idx,emo))
+            latent_batch = torch.cat(latent_batch, dim=0)
+            
+            # for i, (whisper_batch,latent_batch) in enumerate(gen):
+            audio_feature_batch = torch.from_numpy(whisper_batch)
+            audio_feature_batch = audio_feature_batch.to(device=unet.device,
+                                                            dtype=unet.model.dtype)
+            audio_feature_batch = pe(audio_feature_batch)
+            latent_batch = latent_batch.to(dtype=unet.model.dtype)
+            # print('prepare time:',time.perf_counter()-t)
+            # t=time.perf_counter()
+
+            pred_latents = unet.model(latent_batch, 
+                                        timesteps, 
+                                        encoder_hidden_states=audio_feature_batch).sample
+            # print('unet time:',time.perf_counter()-t)
+            # t=time.perf_counter()
+            recon = vae.decode_latents(pred_latents)
+            # infer_inqueue.put((whisper_batch,latent_batch,sessionid))
+            # recon,outsessionid = infer_outqueue.get()
+            # if outsessionid != sessionid:
+            #     print('outsessionid:',outsessionid,' mysessionid:',sessionid)
+
+            # print('vae time:',time.perf_counter()-t)
+            # print('diffusion len=',len(recon))
+            counttime += (time.perf_counter() - t)
+            count += batch_size
+            #_totalframe += 1
+            if count>=100:
+                logger.info(f"------actual avg infer fps:{count/counttime:.4f}")
+                count=0
+                counttime=0
+            for i,res_frame in enumerate(recon):
+                #self.__pushmedia(res_frame,loop,audio_track,video_track)
+                res_frame_queue.put((res_frame,face_indexes[i],audio_frames[i*2:i*2+2]))
+                # avatars[emo].index += 1
+            #print('total batch time:',time.perf_counter()-starttime)            
+    logger.info('musereal inference processor stop')
+
+
 class MuseReal(BaseReal):
     @torch.no_grad()
-    def __init__(self, opt, model, avatar):
+    def __init__(self, opt, model, avatar=None, transitions=None):
         super().__init__(opt)
         #self.opt = opt # shared with the trainer's opt to support in-place modification of rendering parameters.
         # self.W = opt.W
@@ -223,13 +368,20 @@ class MuseReal(BaseReal):
         self.res_frame_queue = mp.Queue(self.batch_size*2)
 
         self.vae, self.unet, self.pe, self.timesteps, self.audio_processor = model
-        self.frame_list_cycle,self.mask_list_cycle,self.coord_list_cycle,self.mask_coords_list_cycle, self.input_latent_list_cycle = avatar
+        
         #self.__loadavatar()
 
         self.asr = MuseASR(opt,self,self.audio_processor)
         self.asr.warm_up()
         
         self.render_event = mp.Event()
+
+        self.multi_avatar = opt.multi_avatar
+
+        self.avatars: dict[str, AvatarMeta] = avatar
+
+        self.transitions: dict[str, dict[str, any]] = transitions
+
 
     # def __del__(self):
     #     logger.info(f'musereal({self.sessionid}) delete')
@@ -268,17 +420,48 @@ class MuseReal(BaseReal):
         recon = self.vae.decode_latents(pred_latents)
       
 
-    def paste_back_frame(self,pred_frame,idx:int):
-        bbox = self.coord_list_cycle[idx]
-        ori_frame = copy.deepcopy(self.frame_list_cycle[idx])
-        x1, y1, x2, y2 = bbox
+    def paste_back_frame(self,pred_frame,idx:int,emo: str=EMOTION.DEFAULT):
+        if self.multi_avatar:
+            avatar = self.avatars[emo]
+            bbox = avatar.coord_list_cycle[idx]
+            ori_frame = copy.deepcopy(avatar.frame_list_cycle[idx])
+            x1, y1, x2, y2 = bbox
 
-        res_frame = cv2.resize(pred_frame.astype(np.uint8),(x2-x1,y2-y1))
-        mask = self.mask_list_cycle[idx]
-        mask_crop_box = self.mask_coords_list_cycle[idx]
+            # 生成预测框，并调整为bbox大小
+            res_frame = cv2.resize(pred_frame.astype(np.uint8), (x2 - x1, y2 - y1))
 
-        combine_frame = get_image_blending(ori_frame,res_frame,bbox,mask,mask_crop_box)
-        return combine_frame
+            # 获取对应的mask和crop_box
+            mask = avatar.mask_list_cycle[idx]
+            mask_crop_box = avatar.mask_coords_list_cycle[idx]
+
+            # 打印调试信息
+            # print(f"ori_frame shape: {ori_frame.shape}")
+            # print(f"res_frame shape: {res_frame.shape}")
+            # print(f"mask shape: {mask.shape}")
+            # print(f"mask_crop_box: {mask_crop_box}")
+            # print(f"bbox: {bbox}")
+            # print("emotion:", emo)
+
+            # # 确保mask和res_frame大小一致
+            # if mask.shape[:2] != (y2 - y1, x2 - x1):
+            #     print("Resizing mask to match res_frame dimensions...")
+            #     mask = cv2.resize(mask, (x2 - x1, y2 - y1))
+
+            # 调用get_image_blending进行融合
+            combine_frame = get_image_blending(ori_frame, res_frame, bbox, mask, mask_crop_box)
+
+            return combine_frame
+        else:
+            bbox = self.coord_list_cycle[idx]
+            ori_frame = copy.deepcopy(self.frame_list_cycle[idx])
+            x1, y1, x2, y2 = bbox
+
+            res_frame = cv2.resize(pred_frame.astype(np.uint8),(x2-x1,y2-y1))
+            mask = self.mask_list_cycle[idx]
+            mask_crop_box = self.mask_coords_list_cycle[idx]
+
+            combine_frame = get_image_blending(ori_frame,res_frame,bbox,mask,mask_crop_box)
+            return combine_frame
             
     def render(self,quit_event,loop=None,audio_track=None,video_track=None):
         #if self.opt.asr:
@@ -289,9 +472,17 @@ class MuseReal(BaseReal):
         
         #self.render_event.set() #start infer process render
         infer_quit_event = Event()
-        infer_thread = Thread(target=inference, args=(infer_quit_event,self.batch_size,self.input_latent_list_cycle,
-                                           self.asr.feat_queue,self.asr.output_queue,self.res_frame_queue,
-                                           self.vae, self.unet, self.pe,self.timesteps)) #mp.Process
+        if self.multi_avatar:
+            infer_thread = Thread(target=multi_avatar_inference, args=(infer_quit_event,self.batch_size,
+                                                                       self.avatars,
+                                                                       self.asr.feat_queue,
+                                                                       self.asr.output_queue,
+                                                                       self.res_frame_queue,
+                                                                       self.vae, self.unet, self.pe,self.timesteps)) #mp.Process
+        else:
+            infer_thread = Thread(target=inference, args=(infer_quit_event,self.batch_size,self.input_latent_list_cycle,
+                                            self.asr.feat_queue,self.asr.output_queue,self.res_frame_queue,
+                                            self.vae, self.unet, self.pe,self.timesteps)) #mp.Process
         infer_thread.start()
         
         process_quit_event = Event()

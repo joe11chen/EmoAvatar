@@ -16,6 +16,8 @@
 ###############################################################################
 
 # server.py
+import os
+import sys
 from flask import Flask, render_template,send_from_directory,request, jsonify
 from flask_sockets import Sockets
 import base64
@@ -34,6 +36,7 @@ import aiohttp
 import aiohttp_cors
 from aiortc import RTCPeerConnection, RTCSessionDescription,RTCIceServer,RTCConfiguration
 from aiortc.rtcrtpsender import RTCRtpSender
+from data import EMOTION
 from webrtc import HumanPlayer
 from basereal import BaseReal
 from llm import llm_response
@@ -54,7 +57,8 @@ nerfreals:Dict[int, BaseReal] = {} #sessionid:BaseReal
 opt = None
 model = None
 avatar = None
-        
+transitions = None
+threads:list[HumanPlayer] = []
 
 #####webrtc###############################
 pcs = set()
@@ -72,7 +76,7 @@ def build_nerfreal(sessionid:int)->BaseReal:
         nerfreal = LipReal(opt,model,avatar)
     elif opt.model == 'musetalk':
         from musereal import MuseReal
-        nerfreal = MuseReal(opt,model,avatar)
+        nerfreal = MuseReal(opt,model,avatar,transitions)
     # elif opt.model == 'ernerf':
     #     from nerfreal import NeRFReal
     #     nerfreal = NeRFReal(opt,model,avatar)
@@ -102,7 +106,15 @@ async def offer(request):
     
     #ice_server = RTCIceServer(urls='stun:stun.l.google.com:19302')
     ice_server = RTCIceServer(urls='stun:stun.miwifi.com:3478')
-    pc = RTCPeerConnection(configuration=RTCConfiguration(iceServers=[ice_server]))
+    ice_servers = [
+        ice_server
+        # RTCIceServer(
+        #     urls="turns:global.relay.metered.ca:443",
+        #     username="xxx",
+        #     credential="xxx"
+        # )
+    ]
+    pc = RTCPeerConnection(configuration=RTCConfiguration(iceServers=ice_servers))
     pcs.add(pc)
 
     @pc.on("connectionstatechange")
@@ -118,6 +130,7 @@ async def offer(request):
             # gc.collect()
 
     player = HumanPlayer(nerfreals[sessionid])
+    threads.append(player)
     audio_sender = pc.addTrack(player.audio)
     video_sender = pc.addTrack(player.video)
     capabilities = RTCRtpSender.getCapabilities("video")
@@ -310,16 +323,13 @@ async def run(push_url,sessionid):
     await pc.setLocalDescription(await pc.createOffer())
     answer = await post(push_url,pc.localDescription.sdp)
     await pc.setRemoteDescription(RTCSessionDescription(sdp=answer,type='answer'))
-##########################################
-# os.environ['MKL_SERVICE_FORCE_INTEL'] = '1'
-# os.environ['MULTIPROCESSING_METHOD'] = 'forkserver'                                                    
+##########################################                                               
 if __name__ == '__main__':
     mp.set_start_method('spawn')
     parser = argparse.ArgumentParser()
     
     # audio FPS
     parser.add_argument('--fps', type=int, default=50, help="audio fps,must be 50")
-    # sliding window left-middle-right length (unit: 20ms)
     parser.add_argument('-l', type=int, default=10)
     parser.add_argument('-m', type=int, default=8)
     parser.add_argument('-r', type=int, default=10)
@@ -329,7 +339,7 @@ if __name__ == '__main__':
 
     #musetalk opt
     parser.add_argument('--avatar_id', type=str, default='avator_1', help="define which avatar in data/avatars")
-    #parser.add_argument('--bbox_shift', type=int, default=5)
+
     parser.add_argument('--batch_size', type=int, default=16, help="infer batch")
 
     parser.add_argument('--customvideo_config', type=str, default='', help="custom action json")
@@ -349,6 +359,8 @@ if __name__ == '__main__':
     parser.add_argument('--max_session', type=int, default=1)  #multi session count
     parser.add_argument('--listenport', type=int, default=8010, help="web listen port")
 
+    parser.add_argument('--multi_avatar', type=bool, default=False, help="use multi avatar for lipreal")
+
     opt = parser.parse_args()
     #app.config.from_object(opt)
     #print(app.config)
@@ -362,19 +374,27 @@ if __name__ == '__main__':
     #     model = load_model(opt)
     #     avatar = load_avatar(opt) 
     if opt.model == 'musetalk':
-        from musereal import MuseReal,load_model,load_avatar,warm_up
+        from musereal import MuseReal,load_model,load_avatar,warm_up, load_multi_avatar, load_transitions
         logger.info(opt)
         model = load_model()
-        avatar = load_avatar(opt.avatar_id) 
+        transitions = load_transitions()
+        if opt.multi_avatar:
+            avatar_ids = [EMOTION.DEFAULT, EMOTION.CRY, EMOTION.ANGRY, EMOTION.HAPPY, EMOTION.EMOTIONAL]
+            avatar = load_multi_avatar(avatar_ids)
+        else: avatar = load_avatar(opt.avatar_id) 
         warm_up(opt.batch_size,model)      
     elif opt.model == 'wav2lip':
-        from lipreal import LipReal,load_model,load_avatar,warm_up
+        from lipreal import LipReal,load_model,load_avatar,warm_up, load_multi_avatar
         logger.info(opt)
         model = load_model("./models/wav2lip.pth")
-        avatar = load_avatar(opt.avatar_id)
+        if opt.multi_avatar:
+            avatar_ids = [EMOTION.DEFAULT, EMOTION.CRY]
+            avatar = load_multi_avatar(avatar_ids)
+        else:
+            avatar = load_avatar(opt.avatar_id)
         warm_up(opt.batch_size,model,256)
     elif opt.model == 'ultralight':
-        from lightreal import LightReal,load_model,load_avatar,warm_up
+        from lightreal import LightReal,load_model,load_avatar,warm_up, load_multi_avatar
         logger.info(opt)
         model = load_model(opt)
         avatar = load_avatar(opt.avatar_id)
@@ -423,26 +443,23 @@ if __name__ == '__main__':
     logger.info('start http server; http://<serverip>:'+str(opt.listenport)+'/'+pagename)
     logger.info('如果使用webrtc，推荐访问webrtc集成前端: http://<serverip>:'+str(opt.listenport)+'/dashboard.html')
     def run_server(runner):
-        loop = asyncio.new_event_loop()
-        asyncio.set_event_loop(loop)
-        loop.run_until_complete(runner.setup())
-        site = web.TCPSite(runner, '0.0.0.0', opt.listenport)
-        loop.run_until_complete(site.start())
-        if opt.transport=='rtcpush':
-            for k in range(opt.max_session):
-                push_url = opt.push_url
-                if k!=0:
-                    push_url = opt.push_url+str(k)
-                loop.run_until_complete(run(push_url,k))
-        loop.run_forever()    
-    #Thread(target=run_server, args=(web.AppRunner(appasync),)).start()
+        try:
+            loop = asyncio.new_event_loop()
+            asyncio.set_event_loop(loop)
+            loop.run_until_complete(runner.setup())
+            site = web.TCPSite(runner, '0.0.0.0', opt.listenport)
+            loop.run_until_complete(site.start())
+            if opt.transport=='rtcpush':
+                for k in range(opt.max_session):
+                    push_url = opt.push_url
+                    if k!=0:
+                        push_url = opt.push_url+str(k)
+                    loop.run_until_complete(run(push_url,k))
+            loop.run_forever()
+        except (KeyboardInterrupt, EOFError):
+            print("\nEvent loop is stopping...")
+        finally:
+            os._exit(0)
+
     run_server(web.AppRunner(appasync))
 
-    #app.on_shutdown.append(on_shutdown)
-    #app.router.add_post("/offer", offer)
-
-    # print('start websocket server')
-    # server = pywsgi.WSGIServer(('0.0.0.0', 8000), app, handler_class=WebSocketHandler)
-    # server.serve_forever()
-    
-    

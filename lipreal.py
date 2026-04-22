@@ -16,6 +16,7 @@
 ###############################################################################
 
 from dataclasses import dataclass
+from enum import Enum
 import math
 import torch
 import numpy as np
@@ -34,11 +35,12 @@ from threading import Thread, Event
 import torch.multiprocessing as mp
 
 
+from data import EMOTION
 from lipasr import LipASR
 import asyncio
 from av import AudioFrame, VideoFrame
 from wav2lip.models import Wav2Lip
-from basereal import BaseReal
+from basereal import BaseReal, draw_info
 
 #from imgcache import ImgCache
 
@@ -47,6 +49,12 @@ from logger import logger
 
 device = "cuda" if torch.cuda.is_available() else ("mps" if (hasattr(torch.backends, "mps") and torch.backends.mps.is_available()) else "cpu")
 print('Using {} for inference.'.format(device))
+@dataclass
+class AvatarMeta:
+    frame_list_cycle: list
+    face_list_cycle: list
+    coord_list_cycle: list
+    length: int
 
 def _load(checkpoint_path):
 	if device == 'cuda':
@@ -86,6 +94,16 @@ def load_avatar(avatar_id):
     face_list_cycle = read_imgs(input_face_list)
 
     return frame_list_cycle,face_list_cycle,coord_list_cycle
+
+def load_multi_avatar(avatar_ids: list[str]):
+    avatars = {}
+    for avatar_id in avatar_ids:
+        frame_list_cycle, face_list_cycle, coord_list_cycle = load_avatar(avatar_id)
+        avatars[avatar_id] = AvatarMeta(frame_list_cycle=frame_list_cycle,
+                                        face_list_cycle=face_list_cycle,
+                                        coord_list_cycle=coord_list_cycle)
+    return avatars
+
 
 @torch.no_grad()
 def warm_up(batch_size,model,modelres):
@@ -147,12 +165,18 @@ def inference(quit_event,batch_size,face_list_cycle,audio_feat_queue,audio_out_q
                 index = index + 1
         else:
             # print('infer=======')
+
             t=time.perf_counter()
             img_batch = []
             for i in range(batch_size):
                 idx = __mirror_index(length,index+i)
                 face = face_list_cycle[idx]
                 img_batch.append(face)
+
+            logger.info("mel batch size: {}".format(len(mel_batch)))
+            logger.info("audio frames size: {}".format(len(audio_frames)))
+            logger.info("img batch size: {}".format(len(img_batch)))
+            
             img_batch, mel_batch = np.asarray(img_batch), np.asarray(mel_batch)
 
             img_masked = img_batch.copy()
@@ -182,20 +206,94 @@ def inference(quit_event,batch_size,face_list_cycle,audio_feat_queue,audio_out_q
             #print('total batch time:',time.perf_counter()-starttime)            
     logger.info('lipreal inference processor stop')
 
-@dataclass
-class AvatarMeta:
-    frame_list_cycle: list
-    face_list_cycle: list
-    coord_list_cycle: list
 
-class AvatarEnum:
-     DEFAULT = 'default'
-     CONFUSE = 'confuse'
-     HAPPY = 'happy'
+def multi_avatar_inference(quit_event,batch_size,avatars,audio_feat_queue,audio_out_queue,res_frame_queue,model):
+    @dataclass
+    class AvatarMeta:
+        length: int
+        index: int
+
+    avatar_metas = {key: AvatarMeta(length=len(avatar.frame_list_cycle), index=0) for key, avatar in avatars.items()}
+
+    logger.info("avatar metas: {}".format(avatar_metas))
+
+    count=0
+    counttime=0
+    logger.info('start multi-avatar inference')
+    while not quit_event.is_set():
+        starttime=time.perf_counter()
+        mel_batch = []
+        try:
+            mel_batch = audio_feat_queue.get(block=True, timeout=1)
+        except queue.Empty:
+            continue
+            
+        is_all_silence=True
+        audio_frames = []
+        for _ in range(batch_size*2):
+            frame,type,eventpoint = audio_out_queue.get()
+            audio_frames.append((frame,type,eventpoint))
+            # if eventpoint is not None and eventpoint.get('text') is not None:
+            #     logger.info("audio frame eventpoint: {}".format(eventpoint))
+            if type==0:
+                is_all_silence=False
+
+        if is_all_silence:
+            for i in range(batch_size):
+                res_frame_queue.put((None,(__mirror_index(avatar_metas[EMOTION.DEFAULT].length, avatar_metas[EMOTION.DEFAULT].index), EMOTION.DEFAULT), audio_frames[i*2:i*2+2]))
+                avatar_metas[EMOTION.DEFAULT].index = avatar_metas[EMOTION.DEFAULT].index + 1
+        else:
+            t=time.perf_counter()
+            img_batch = []
+            face_indexes = []
+            for i in range(batch_size):
+                if i * 2 > len(audio_frames):
+                    logger.warning("Not enough audio frames for batch size {}".format(batch_size))
+                emo = EMOTION.DEFAULT
+                if audio_frames[i*2][2] is not None:
+                    emo = audio_frames[i*2][2].get('emo', EMOTION.DEFAULT)
+                
+                logger.debug(f'eventpoint: {audio_frames[i*2][2]}, emotion: {emo}')
+                idx = __mirror_index(avatar_metas[emo].length, avatar_metas[emo].index)
+                avatar_metas[emo].index += 1
+                
+                face = avatars[emo].face_list_cycle[idx]
+                face_indexes.append((idx, emo))
+                img_batch.append(face)
+            img_batch, mel_batch = np.asarray(img_batch), np.asarray(mel_batch)
+
+            img_masked = img_batch.copy()
+            img_masked[:, face.shape[0]//2:] = 0
+
+            img_batch = np.concatenate((img_masked, img_batch), axis=3) / 255.
+            mel_batch = np.reshape(mel_batch, [len(mel_batch), mel_batch.shape[1], mel_batch.shape[2], 1])
+            
+            img_batch = torch.FloatTensor(np.transpose(img_batch, (0, 3, 1, 2))).to(device)
+            mel_batch = torch.FloatTensor(np.transpose(mel_batch, (0, 3, 1, 2))).to(device)
+
+            with torch.no_grad():
+                pred = model(mel_batch, img_batch)
+            pred = pred.cpu().numpy().transpose(0, 2, 3, 1) * 255.
+
+            counttime += (time.perf_counter() - t)
+            count += batch_size
+            if count>=100:
+                logger.info(f"------actual avg infer fps:{count/counttime:.4f}")
+                count=0
+                counttime=0
+            for i,res_frame in enumerate(pred):
+                #self.__pushmedia(res_frame,loop,audio_track,video_track)
+                res_frame_queue.put((res_frame,face_indexes[i],audio_frames[i*2:i*2+2]))
+                # avatar_metas[emo].index = avatar_metas[emo].index + 1
+            #print('total batch time:',time.perf_counter()-starttime)            
+    logger.info('lipreal inference processor stop')
+
+
+
 
 class LipReal(BaseReal):
     @torch.no_grad()
-    def __init__(self, opt, model, avatar, multi_avatar=False):
+    def __init__(self, opt, model, avatar):
         super().__init__(opt)
         #self.opt = opt # shared with the trainer's opt to support in-place modification of rendering parameters.
         # self.W = opt.W
@@ -208,25 +306,24 @@ class LipReal(BaseReal):
         self.res_frame_queue = Queue(self.batch_size*2)  #mp.Queue
         #self.__loadavatar()
         self.model = model
-        self.frame_list_cycle,self.face_list_cycle,self.coord_list_cycle = avatar
 
-        self.asr = LipASR(opt,self)
+
+        self.asr: LipASR = LipASR(opt,self)
         self.asr.warm_up()
         
         self.render_event = mp.Event()
-        self.multi_avatar = multi_avatar
+        self.multi_avatar = opt.multi_avatar
         if self.multi_avatar:
-            self.avatars = {key: AvatarMeta(frame_list_cycle=frame_list,
-                                            face_list_cycle=face_list,
-                                            coord_list_cycle=coord_list)
-             for key, (frame_list, face_list, coord_list) in avatar.items()}
+            self.avatars: dict[str, AvatarMeta] = avatar
+        else:
+            self.frame_list_cycle,self.face_list_cycle,self.coord_list_cycle = avatar
     # def __del__(self):
     #     logger.info(f'lipreal({self.sessionid}) delete')
 
-    def paste_back_frame(self,pred_frame,idx:int):
+    def paste_back_frame(self,pred_frame,idx:int, emo: str=EMOTION.DEFAULT):
         if self.multi_avatar:
-            bbox = self.avatars[AvatarEnum.DEFAULT].coord_list_cycle[idx]
-            combine_frame = copy.deepcopy(self.avatars[AvatarEnum.DEFAULT].frame_list_cycle[idx])
+            bbox = self.avatars[emo].coord_list_cycle[idx]
+            combine_frame = copy.deepcopy(self.avatars[emo].frame_list_cycle[idx])
             #combine_frame = copy.deepcopy(self.imagecache.get_img(idx))
             y1, y2, x1, x2 = bbox
             res_frame = cv2.resize(pred_frame.astype(np.uint8),(x2-x1,y2-y1))
@@ -253,9 +350,15 @@ class LipReal(BaseReal):
         self.tts.render(quit_event)
         
         infer_quit_event = Event()
-        infer_thread = Thread(target=inference, args=(infer_quit_event,self.batch_size,self.face_list_cycle,
-                                           self.asr.feat_queue,self.asr.output_queue,self.res_frame_queue,
-                                           self.model,))  #mp.Process
+
+        if self.multi_avatar:
+            infer_thread = Thread(target=multi_avatar_inference, args=(infer_quit_event,self.batch_size,self.avatars,
+                                               self.asr.feat_queue,self.asr.output_queue,self.res_frame_queue,
+                                               self.model,))  #mp.Process
+        else:
+            infer_thread = Thread(target=inference, args=(infer_quit_event,self.batch_size,self.face_list_cycle,
+                                            self.asr.feat_queue,self.asr.output_queue,self.res_frame_queue,
+                                            self.model,))  #mp.Process
         infer_thread.start()
         
         process_quit_event = Event()
@@ -277,7 +380,7 @@ class LipReal(BaseReal):
             #     print('sleep qsize=',video_track._queue.qsize())
             #     time.sleep(0.04*video_track._queue.qsize()*0.8)
             if video_track and video_track._queue.qsize()>=5:
-                logger.debug('sleep qsize=%d',video_track._queue.qsize())
+                # logger.debug('sleep qsize=%d',video_track._queue.qsize())
                 time.sleep(0.04*video_track._queue.qsize()*0.8)
                 
             # delay = _starttime+_totalframe*0.04-time.perf_counter() #40ms

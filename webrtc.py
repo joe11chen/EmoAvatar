@@ -130,8 +130,8 @@ class PlayerStreamTrack(MediaStreamTrack):
         pts, time_base = await self.next_timestamp()
         frame.pts = pts
         frame.time_base = time_base
-        if eventpoint and self._player is not None:
-            self._player.notify(eventpoint)
+        # if eventpoint and self._player is not None:
+        #     self._player.notify(eventpoint)
         if frame is None:
             self.stop()
             raise Exception
@@ -140,7 +140,7 @@ class PlayerStreamTrack(MediaStreamTrack):
             self.framecount += 1
             self.lasttime = time.perf_counter()
             if self.framecount==100:
-                mylogger.info(f"------actual avg final fps:{self.framecount/self.totaltime:.4f}")
+                # mylogger.info(f"------actual avg final fps:{self.framecount/self.totaltime:.4f}")
                 self.framecount = 0
                 self.totaltime=0
         return frame

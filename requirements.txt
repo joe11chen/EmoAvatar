@@ -1,9 +1,9 @@
 torch-ema
 ninja
 trimesh
-opencv-python
+opencv-python<4.10
 tensorboardX
-numpy 
+numpy<2
 pandas
 tqdm
 matplotlib
@@ -30,7 +30,7 @@ transformers==4.46.2
 edge_tts
 flask
 flask_sockets
-opencv-python-headless
+opencv-python-headless<4.10
 aiortc
 aiohttp_cors
 

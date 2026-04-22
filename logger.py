@@ -2,7 +2,8 @@ import logging
  
 # 配置日志器
 logger = logging.getLogger(__name__)
-logger.setLevel(logging.DEBUG)
+logging.basicConfig(level=logging.INFO, format='[%(asctime)s][%(filename)s %(lineno)d][%(levelname)s] %(message)s')
+logger.setLevel(logging.INFO)
 formatter = logging.Formatter('%(asctime)s - %(name)s - %(levelname)s - %(message)s')
 fhandler = logging.FileHandler('livetalking.log')  # 可以改为StreamHandler输出到控制台或多个Handler组合使用等。
 fhandler.setFormatter(formatter)
