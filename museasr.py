@@ -32,10 +32,12 @@ class MuseASR(BaseASR):
     def run_step(self):
         ############################################## extract audio feature ##############################################
         start_time = time.time()
-        for _ in range(self.batch_size*2):
+        for _ in range(self.batch_size):
             audio_frame,type,eventpoint = self.get_audio_frame()
-            self.frames.append(audio_frame)
-            self.output_queue.put((audio_frame,type,eventpoint))
+            self.frames.append(audio_frame[0])
+            self.frames.append(audio_frame[1])
+            self.output_queue.put((audio_frame[0],type,eventpoint))
+            self.output_queue.put((audio_frame[1],type,eventpoint))
         
         if len(self.frames) <= self.stride_left_size + self.stride_right_size:
             return

@@ -762,7 +762,10 @@ class IndexTTS2(BaseTTS):
         
     def txt_to_audio(self, msg):
         text, textevent = msg
-        emotion = textevent.get('emo', EMOTION.DEFAULT)
+        emotion = textevent.get('emo', None)
+        if emotion is None:
+            logger.error("IndexTTS2 txt_to_audio - 没有找到情绪信息，使用默认情绪")
+            emotion = EMOTION.DEFAULT
 
         # emo_change = False
         # if self.prev_emo is None or emotion != self.prev_emo:
@@ -784,26 +787,30 @@ class IndexTTS2(BaseTTS):
                 if self.state != State.RUNNING:
                     break
         
-                # if emotion != self.prev_emo:
-                #     logger.info(f"情绪变化，已更新为: {emotion}")
-                #     transition_frames = len(self.parent.transitions[self.prev_emo][emotion]) * 2
-                #     logger.info(f" {transition_frames} 帧过渡音频")
-                    
-                    
-                #     for i in range(transition_frames):
-                #         eventpoint = {"status": "transition", "text": segments, "from": self.prev_emo, "to": emotion, "transition_frame_idx": i}
-                #         eventpoint.update(**textevent)
-                #         print(f"发送过渡帧 {i}/{transition_frames} - {self.prev_emo} -> {emotion}")
-                #         self.parent.put_audio_frame(np.zeros(self.chunk, np.float32), eventpoint)      
-                # logger.info(f"IndexTTS2 text: {segment_text}, emotion: {emotion}")
+
+                logger.info(f"IndexTTS2 text: {segment_text}, emotion: {emotion}")
  
                 audio_file = self.indextts2_generate(segment_text, EMOTION_VECTOR[emotion])
                 # audio_file = self._mock_indextts2_generate(segment_text, EMOTION_VECTOR[emotion])
                 
+
+                
                 if audio_file:
                     # 为每个片段创建事件信息
-                    segment_msg = (segment_text, textevent)
-                    self.file_to_stream(audio_file, segment_msg, emotion, is_first=(i==0), is_last=(i==len(segments)-1))
+                    if emotion != self.prev_emo:
+                        logger.info(f"情绪变化，已更新为: {emotion}")
+                        transition_frames = len(self.parent.transitions[self.prev_emo][emotion]) * 2
+                        # logger.info(f" {transition_frames} 帧过渡音频")
+                        
+                        
+                        for i in range(transition_frames):
+                            eventpoint = {"status": "transition", "text": segments, "from": self.prev_emo, "to": emotion, "transition_frame_idx": i}
+                            eventpoint.update(**textevent)
+                            # logger.info(f"发送过渡帧 {i}/{transition_frames} - {self.prev_emo} -> {emotion}")
+                            self.parent.put_audio_frame(np.zeros(self.chunk, np.float32), eventpoint)
+
+                        segment_msg = (segment_text, textevent)
+                        self.file_to_stream(audio_file, segment_msg, emotion, is_first=(i==0), is_last=(i==len(segments)-1))
                 else:
                     logger.error(f"IndexTTS2 第 {i+1} 段音频生成失败")
 
@@ -881,7 +888,7 @@ class IndexTTS2(BaseTTS):
         )
             
             end = time.perf_counter()
-            logger.debug(f"IndexTTS2 片段生成完成，耗时: {end-start:.2f}s")
+            logger.info(f"IndexTTS2 片段生成完成，耗时: {end-start:.2f}s")
             
             # 返回生成的音频文件路径
             if 'value' in result:

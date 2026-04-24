@@ -355,6 +355,8 @@ if __name__ == '__main__':
 
     parser.add_argument('--transport', type=str, default='rtcpush') #webrtc rtcpush virtualcam
     parser.add_argument('--push_url', type=str, default='http://localhost:1985/rtc/v1/whip/?app=live&stream=livestream') #rtmp://localhost/live/livestream
+    parser.add_argument('--rtc_audio_queue_maxsize', type=int, default=600, help='rtcpush audio queue size; larger means less drop risk but more latency')
+    parser.add_argument('--rtc_video_queue_maxsize', type=int, default=300, help='rtcpush video queue size; larger means less drop risk but more latency')
 
     parser.add_argument('--max_session', type=int, default=1)  #multi session count
     parser.add_argument('--listenport', type=int, default=8010, help="web listen port")

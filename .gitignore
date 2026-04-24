@@ -24,3 +24,7 @@ FCVG/
 .vscode
 .git
 *.zip
+wav2lip/results
+*.png
+*.mov
+*.aac

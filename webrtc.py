@@ -50,17 +50,56 @@ class PlayerStreamTrack(MediaStreamTrack):
     A video track that returns an animated flag.
     """
 
-    def __init__(self, player, kind):
+    def __init__(self, player, kind, queue_maxsize=100):
         super().__init__()  # don't forget this!
         self.kind = kind
         self._player = player
-        self._queue = asyncio.Queue(maxsize=100)
+        self._queue = asyncio.Queue(maxsize=queue_maxsize)
         self.timelist = [] #记录最近包的时间戳
         self.current_frame_count = 0
+        self._stats_window_start = time.time()
+        self._stats_frames = 0
+        self._stats_queue_delay_sum_ms = 0.0
+        self._stats_queue_delay_max_ms = 0.0
+        self._stats_missing_enqueue_ts = 0
+        self._stats_late_frames = 0
+        self._stats_seq_gaps = 0
+        self._stats_last_seq = None
         if self.kind == 'video':
             self.framecount = 0
             self.lasttime = time.perf_counter()
             self.totaltime = 0
+
+    def _log_stats_if_needed(self):
+        now = time.time()
+        elapsed = now - self._stats_window_start
+        if elapsed < 1.0:
+            return
+
+        avg_delay_ms = 0.0
+        if self._stats_frames > 0:
+            avg_delay_ms = self._stats_queue_delay_sum_ms / self._stats_frames
+        fps = self._stats_frames / elapsed if elapsed > 0 else 0.0
+
+        mylogger.info(
+            "rtcpush consumer stats[%s]: fps=%.2f qsize=%d avg_queue_delay_ms=%.2f max_queue_delay_ms=%.2f late_frames=%d missing_enqueue_ts=%d seq_gaps=%d",
+            self.kind,
+            fps,
+            self._queue.qsize(),
+            avg_delay_ms,
+            self._stats_queue_delay_max_ms,
+            self._stats_late_frames,
+            self._stats_missing_enqueue_ts,
+            self._stats_seq_gaps,
+        )
+
+        self._stats_window_start = now
+        self._stats_frames = 0
+        self._stats_queue_delay_sum_ms = 0.0
+        self._stats_queue_delay_max_ms = 0.0
+        self._stats_missing_enqueue_ts = 0
+        self._stats_late_frames = 0
+        self._stats_seq_gaps = 0
     
     _start: float
     _timestamp: int
@@ -127,6 +166,31 @@ class PlayerStreamTrack(MediaStreamTrack):
         #     else:
         #         frame = await self._queue.get()
         frame,eventpoint = await self._queue.get()
+        now = time.time()
+        enqueue_ts = None
+        seq = None
+        if isinstance(eventpoint, dict):
+            enqueue_ts = eventpoint.get("_enqueue_ts")
+            seq = eventpoint.get("_seq")
+
+        if enqueue_ts is not None:
+            queue_delay_ms = (now - enqueue_ts) * 1000.0
+            self._stats_queue_delay_sum_ms += queue_delay_ms
+            self._stats_queue_delay_max_ms = max(self._stats_queue_delay_max_ms, queue_delay_ms)
+            late_threshold_ms = 120.0 if self.kind == 'video' else 60.0
+            if queue_delay_ms > late_threshold_ms:
+                self._stats_late_frames += 1
+        else:
+            self._stats_missing_enqueue_ts += 1
+
+        if isinstance(seq, int):
+            if self._stats_last_seq is not None and seq > self._stats_last_seq + 1:
+                self._stats_seq_gaps += (seq - self._stats_last_seq - 1)
+            self._stats_last_seq = seq
+
+        self._stats_frames += 1
+        self._log_stats_if_needed()
+
         pts, time_base = await self.next_timestamp()
         frame.pts = pts
         frame.time_base = time_base
@@ -177,8 +241,14 @@ class HumanPlayer:
         self.__audio: Optional[PlayerStreamTrack] = None
         self.__video: Optional[PlayerStreamTrack] = None
 
-        self.__audio = PlayerStreamTrack(self, kind="audio")
-        self.__video = PlayerStreamTrack(self, kind="video")
+        audio_queue_maxsize = 200
+        video_queue_maxsize = 100
+        if hasattr(nerfreal, "opt"):
+            audio_queue_maxsize = getattr(nerfreal.opt, "rtc_audio_queue_maxsize", audio_queue_maxsize)
+            video_queue_maxsize = getattr(nerfreal.opt, "rtc_video_queue_maxsize", video_queue_maxsize)
+
+        self.__audio = PlayerStreamTrack(self, kind="audio", queue_maxsize=audio_queue_maxsize)
+        self.__video = PlayerStreamTrack(self, kind="video", queue_maxsize=video_queue_maxsize)
 
         self.__container = nerfreal
 

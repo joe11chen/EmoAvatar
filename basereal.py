@@ -29,6 +29,7 @@ import glob
 import resampy
 
 import queue
+import concurrent.futures
 from queue import Queue
 from threading import Thread, Event
 from io import BytesIO
@@ -177,13 +178,20 @@ class BaseReal:
         self.avatars: dict[str, any]
 
         self.transitions: dict[EMOTION, dict[EMOTION, any]] = None
+        self.tmp_audio = None
 
 
     def put_msg_txt(self,msg,datainfo:dict={}):
         self.tts.put_msg_txt(msg,datainfo)
     
     def put_audio_frame(self,audio_chunk,datainfo:dict={}): #16khz 20ms pcm
-        self.asr.put_audio_frame(audio_chunk,datainfo)
+        # 拼接成两个一组的音频帧，送入ASR队列
+        if self.tmp_audio is None:
+            self.tmp_audio = audio_chunk
+        else:
+            self.asr.put_audio_frame((self.tmp_audio, audio_chunk),datainfo)
+            self.tmp_audio = None
+
 
     def put_audio_file(self,filebyte,datainfo:dict={}): 
         input_stream = BytesIO(filebyte)
@@ -370,6 +378,28 @@ class BaseReal:
 
     def process_frames(self,quit_event,loop=None,audio_track=None,video_track=None):
         enable_transition = True  # 设置为False禁用过渡效果，True启用
+        f = open("frame_info_record.txt", "w+") #记录每一帧的状态信息，调试用
+
+        def enqueue_webrtc_frame(track, frame, eventpoint, kind):
+            if track is None or loop is None:
+                return False
+            future = asyncio.run_coroutine_threadsafe(track._queue.put((frame, eventpoint)), loop)
+            while not quit_event.is_set():
+                try:
+                    future.result(timeout=1.0)
+                    return True
+                except concurrent.futures.TimeoutError:
+                    logger.warning(
+                        "rtcpush enqueue pending[%s]: qsize=%d",
+                        kind,
+                        track._queue.qsize(),
+                    )
+                    continue
+                except Exception as e:
+                    logger.warning("rtcpush enqueue failed[%s]: %s", kind, e)
+                    return False
+            return False
+
         
         if enable_transition:
             _last_speaking = False
@@ -388,6 +418,11 @@ class BaseReal:
         
         prev_status = None
         cnt = 0
+        video_seq = 0
+        audio_seq = 0
+        monitor_last_log_time = time.time()
+        monitor_video_enqueued = 0
+        monitor_audio_enqueued = 0
         
         while not quit_event.is_set():
             try:
@@ -420,7 +455,7 @@ class BaseReal:
             if status == "transition":
                 prev, now = audio_frames[0][2].get("from"), audio_frames[0][2].get("to")
                 transition_frame_idx = audio_frames[0][2].get("transition_frame_idx", None) // 2
-                print(f'[INFO] Transition detected: {prev} → {now}, frame idx: {transition_frame_idx}')
+                # print(f'[INFO] Transition detected: {prev} → {now}, frame idx: {transition_frame_idx}')
                 if transition_frame_idx is None :
                     logger.error("Transition status found but no transition_frame_idx provided. Skipping transition frame.")
                 combine_frame = self.transitions[prev][now][transition_frame_idx]
@@ -470,8 +505,8 @@ class BaseReal:
             combine_frame = copy.deepcopy(combine_frame)
             extra_text = str(audio_frames[0][2])
             # 过滤中文
-            import re
-            extra_text = re.sub(r'[\u4e00-\u9fa5]', '', extra_text)
+            # import re
+            # extra_text = re.sub(r'[\u4e00-\u9fa5]', '', extra_text)
             # combine_frame = draw_info(combine_frame, "Emotion: {}, Frame idx: {}\nEvent: {}\n".format(emo, idx, extra_text))
             cv2.putText(combine_frame, "LiveTalking", (10, 20), cv2.FONT_HERSHEY_SIMPLEX, 0.3, (128,128,128), 1)
             if self.opt.transport=='virtualcam':
@@ -482,8 +517,20 @@ class BaseReal:
             else: #webrtc
                 image = combine_frame
                 new_frame = VideoFrame.from_ndarray(image, format="bgr24")
-                asyncio.run_coroutine_threadsafe(video_track._queue.put((new_frame,None)), loop)
+                next_video_seq = video_seq + 1
+                video_eventpoint = {
+                    "_enqueue_ts": time.time(),
+                    "_seq": next_video_seq,
+                }
+                if enqueue_webrtc_frame(video_track, new_frame, video_eventpoint, "video"):
+                    video_seq = next_video_seq
+                    monitor_video_enqueued += 1
+                else:
+                    logger.warning("rtcpush video frame enqueue aborted")
+                    break
             self.record_video_data(combine_frame)
+            f.write(f"Frame {idx}, Emotion: {emo}, Status: {status}, Event: {extra_text}\n")
+
 
             for audio_frame in audio_frames:
                 frame,type,eventpoint = audio_frame
@@ -495,15 +542,49 @@ class BaseReal:
                     new_frame = AudioFrame(format='s16', layout='mono', samples=frame.shape[0])
                     new_frame.planes[0].update(frame.tobytes())
                     new_frame.sample_rate=16000
-                    asyncio.run_coroutine_threadsafe(audio_track._queue.put((new_frame,eventpoint)), loop)
+                    next_audio_seq = audio_seq + 1
+                    audio_eventpoint = eventpoint.copy() if isinstance(eventpoint, dict) else {}
+                    audio_eventpoint["_enqueue_ts"] = time.time()
+                    audio_eventpoint["_seq"] = next_audio_seq
+                    if enqueue_webrtc_frame(audio_track, new_frame, audio_eventpoint, "audio"):
+                        audio_seq = next_audio_seq
+                        monitor_audio_enqueued += 1
+                    else:
+                        logger.warning("rtcpush audio frame enqueue aborted")
+                        break
                 self.record_audio_data(frame)
+
+            if self.opt.transport != 'virtualcam' and (time.time() - monitor_last_log_time) >= 1.0:
+                video_qsize = -1
+                audio_qsize = -1
+                res_qsize = -1
+                if video_track is not None:
+                    video_qsize = video_track._queue.qsize()
+                if audio_track is not None:
+                    audio_qsize = audio_track._queue.qsize()
+                try:
+                    res_qsize = self.res_frame_queue.qsize()
+                except (NotImplementedError, AttributeError):
+                    res_qsize = -1
+
+                logger.info(
+                    "rtcpush producer stats: video_enq=%d/s audio_enq=%d/s q_video=%d q_audio=%d q_res=%d",
+                    monitor_video_enqueued,
+                    monitor_audio_enqueued,
+                    video_qsize,
+                    audio_qsize,
+                    res_qsize,
+                )
+                monitor_video_enqueued = 0
+                monitor_audio_enqueued = 0
+                monitor_last_log_time = time.time()
             if self.opt.transport=='virtualcam':
                 vircam.sleep_until_next_frame()
         if self.opt.transport=='virtualcam':
             audio_thread.join()
             vircam.close()
         logger.info('basereal process_frames thread stop') 
-    
+        f.close()
     # def process_custom(self,audiotype:int,idx:int):
     #     if self.curr_state!=audiotype: #从推理切到口播
     #         if idx in self.switch_pos:  #在卡点位置可以切换

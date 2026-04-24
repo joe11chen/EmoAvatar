@@ -277,6 +277,7 @@ def inference(quit_event,batch_size,input_latent_list_cycle,audio_feat_queue,aud
 def multi_avatar_inference(quit_event,batch_size,avatars: dict[str, AvatarMeta],audio_feat_queue,audio_out_queue,res_frame_queue,vae,unet,pe,timesteps): #vae, unet, pe,timesteps
     count=0
     counttime=0
+    last_emo = EMOTION.DEFAULT
     logger.info('start multi inference')
     while not quit_event.is_set():
         starttime=time.perf_counter()
@@ -286,7 +287,7 @@ def multi_avatar_inference(quit_event,batch_size,avatars: dict[str, AvatarMeta],
             continue
         is_all_silence=True
         audio_frames = []
-        for _ in range(batch_size*2):
+        for _ in range(batch_size * 2):
             frame,type,eventpoint = audio_out_queue.get()
             audio_frames.append((frame,type,eventpoint))
             if type==0:
@@ -294,8 +295,33 @@ def multi_avatar_inference(quit_event,batch_size,avatars: dict[str, AvatarMeta],
 
         if is_all_silence:
             for i in range(batch_size):
-                res_frame_queue.put((None,(__mirror_index(avatars[EMOTION.DEFAULT].length,avatars[EMOTION.DEFAULT].index), EMOTION.DEFAULT),audio_frames[i*2:i*2+2]))
-                avatars[EMOTION.DEFAULT].index += 1
+                pair_frames = audio_frames[i*2:i*2+2]
+                event0 = pair_frames[0][2]
+                event1 = pair_frames[1][2]
+
+                emo0 = event0.get("emo") if event0 else None
+                emo1 = event1.get("emo") if event1 else None
+                emo = emo0 or emo1
+                if emo0 != emo1:
+                    logger.error("-multi_avatar inference- Emotion conflict in silence frames, audio frame info : {};{}".format(event0, event1))
+                else:
+                    emo = emo0
+                
+                status1 = event0.get("status") if event0 else None
+                status2 = event1.get("status") if event1 else None
+                if status1 != status2:
+                    logger.error("-multi_avatar inference- Status conflict in silence frames, audio frame info : {};{}".format(event0, event1))
+                else:
+                    status = status1
+
+
+                if status == "transition":
+                    idx = avatars[emo].index % avatars[emo].length
+                else: 
+                    idx = __mirror_index(avatars[emo].length, avatars[emo].index)
+                    avatars[emo].index += 1
+                res_frame_queue.put((None, (idx, emo), pair_frames))
+
         else:
             # print('infer=======')
             t=time.perf_counter()
@@ -303,14 +329,32 @@ def multi_avatar_inference(quit_event,batch_size,avatars: dict[str, AvatarMeta],
             latent_batch = []
             face_indexes = []
             for i in range(batch_size):
-                try:
-                    assert audio_frames[i*2][2].get("emo") == audio_frames[i*2+1][2].get("emo")
-                    emo = audio_frames[i*2][2].get("emo")
-                except Exception:
-                    logger.error("Emotion error: {}".format(Exception))
+                event0 = audio_frames[i*2][2]
+                event1 = audio_frames[i*2+1][2]
+                emo0 = event0.get("emo") if event0 else None
+                emo1 = event1.get("emo") if event1 else None
+
+                if emo0 is not None and emo1 is not None and emo0 != emo1:
+                    logger.warning("-avatar inference- Emotion conflict, audio frame info : {};{}".format(event0, event1))
+
+                emo = emo0 or emo1 or last_emo
+                if emo not in avatars:
+                    logger.warning("-avatar inference- Unknown emotion {}, fallback to DEFAULT".format(emo))
                     emo = EMOTION.DEFAULT
-                idx = __mirror_index(avatars[emo].length,avatars[emo].index)
-                avatars[emo].index += 1
+
+                
+                status1 = event0.get("status") if event0 else None
+                status2 = event1.get("status") if event1 else None
+                if status1 != status2:
+                    logger.error("-multi_avatar inference- Status conflict in silence frames, audio frame info : {};{}".format(event0, event1))
+                else:
+                    status = status1
+                
+                if status == "transition":
+                    idx = avatars[emo].index % avatars[emo].length
+                else:
+                    idx = __mirror_index(avatars[emo].length,avatars[emo].index)
+                    avatars[emo].index += 1
                 latent = avatars[emo].input_latent_list_cycle[idx]
                 latent_batch.append(latent)
                 face_indexes.append((idx,emo))

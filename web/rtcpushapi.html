@@ -29,6 +29,8 @@
     <label for="use-stun">Use STUN server</label>
 </div>
 <button class="btn btn-primary" id="btn_play">Start</button>
+<button class="btn btn-primary" id="btn_record_toggle">Start Recording</button>
+<input type="hidden" id="sessionid" value="0">
 <form class="form-inline" id="echo-form">
     <div class="form-group">
       <p>input text</p>
@@ -51,6 +53,8 @@
 <script type="text/javascript" charset="utf-8">
 
 	$(document).ready(function() {
+    var isRecording = false;
+
 	  // var host = window.location.hostname
 	  // var ws = new WebSocket("ws://"+host+":8000/humanecho");
 	  // //document.getElementsByTagName("video")[0].setAttribute("src", aa["video"]);
@@ -86,6 +90,40 @@
       //ws.send(message);
       $('#message').val('');
 	  });
+
+    $('#btn_record_toggle').click(function() {
+    var btn = $('#btn_record_toggle');
+    var reqType = isRecording ? 'end_record' : 'start_record';
+
+    btn.prop('disabled', true);
+    fetch('/record', {
+      body: JSON.stringify({
+        type: reqType,
+        sessionid: parseInt(document.getElementById('sessionid').value, 10),
+      }),
+      headers: {
+        'Content-Type': 'application/json'
+      },
+      method: 'POST'
+    }).then(function(response) {
+      if (!response.ok) {
+        throw new Error('Request failed with status ' + response.status);
+      }
+      return response.json();
+    }).then(function(result) {
+      if (result.code !== 0) {
+        throw new Error(result.msg || 'record api returned error');
+      }
+
+      isRecording = !isRecording;
+      btn.text(isRecording ? 'Stop Recording' : 'Start Recording');
+      console.log(isRecording ? 'Recording started.' : 'Recording stopped.');
+    }).catch(function(error) {
+      console.error('Record error:', error);
+    }).finally(function() {
+      btn.prop('disabled', false);
+    });
+    });
 	});
 
   $(function(){

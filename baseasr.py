@@ -71,7 +71,7 @@ class BaseASR:
                 frame = self.parent.get_audio_stream(self.parent.curr_state)
                 type = self.parent.curr_state
             else:
-                frame = np.zeros(self.chunk, dtype=np.float32)
+                frame = (np.zeros(self.chunk, dtype=np.float32), np.zeros(self.chunk, dtype=np.float32))
                 type = 1
             
             if self.llm_status != "end":
@@ -87,10 +87,15 @@ class BaseASR:
         return self.output_queue.get()
     
     def warm_up(self):
-        for _ in range(self.stride_left_size + self.stride_right_size):
+        cnt = 0
+        while cnt < self.stride_left_size + self.stride_right_size:
             audio_frame,type,eventpoint=self.get_audio_frame()
-            self.frames.append(audio_frame)
-            self.output_queue.put((audio_frame,type,eventpoint))
+            self.frames.append(audio_frame[0])
+            self.frames.append(audio_frame[1])
+            self.output_queue.put((audio_frame[0],type,eventpoint))
+            self.output_queue.put((audio_frame[1],type,eventpoint))
+            cnt += 2
+        
         for _ in range(self.stride_left_size):
             self.output_queue.get()
 
