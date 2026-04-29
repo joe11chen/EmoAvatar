@@ -1,7 +1,6 @@
 import copy
 import time
-import os
-from basereal import BaseReal
+from core.runtime.renderer.base import BaseReal
 from data import EMOTION
 from logger import logger
 

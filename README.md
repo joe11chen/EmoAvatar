@@ -16,6 +16,11 @@
 [wav2lip效果](https://www.bilibili.com/video/BV1scwBeyELA/) | [ernerf效果](https://www.bilibili.com/video/BV1G1421z73r/) | [musetalk效果](https://www.bilibili.com/video/BV1gm421N7vQ/)  
 国内镜像地址:<https://gitee.com/lipku/LiveTalking> 
 
+## 当前代码架构说明（请先读）
+
+- 当前重构后的唯一有效说明文档：`docs/refactor/README.md`
+- 文档链接：[docs/refactor/README.md](./docs/refactor/README.md)
+
 ## 为避免与3d数字人混淆，原项目metahuman-stream改名为livetalking，原有链接地址继续可用
 
 ## News
@@ -64,7 +69,7 @@ GoogleDriver <https://drive.google.com/drive/folders/1FOC_MD6wdogyyX_7V1d4NDIO7P
 将wav2lip256.pth拷到本项目的models下, 重命名为wav2lip.pth;  
 将wav2lip256_avatar1.tar.gz解压后整个文件夹拷到本项目的data/avatars下
 - 运行  
-python app.py --transport webrtc --model wav2lip --avatar_id wav2lip256_avatar1  
+python app.py --transport webrtc --renderer musetalk --avatar_id avator_1  
 <font color=red>服务端需要开放端口 tcp:8010; udp:1-65536 </font>  
 客户端可以选用以下两种方式:  
 (1)用浏览器打开http://serverip:8010/webrtcapi.html , 先点‘start',播放数字人视频；然后在文本框输入任意文字，提交。数字人播报该段文字  

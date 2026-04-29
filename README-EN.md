@@ -16,6 +16,11 @@ A real-time interactive streaming digital human system enabling synchronized aud
 [wav2lip Demo](https://www.bilibili.com/video/BV1scwBeyELA/) | [ernerf Demo](https://www.bilibili.com/video/BV1G1421z73r/) | [musetalk Demo](https://www.bilibili.com/video/BV1gm421N7vQ/)  
 Domestic Mirror Repository: <https://gitee.com/lipku/LiveTalking> 
 
+## Current Architecture Doc (Read First)
+
+- The single source-of-truth doc for the current refactored codebase is:
+  `docs/refactor/README.md`
+- Link: [docs/refactor/README.md](./docs/refactor/README.md)
 
 ## News
 - Dec 8, 2024: Enhanced multi-concurrency support; GPU memory no longer increases with the number of concurrent streams.
@@ -65,7 +70,7 @@ Google Drive: <https://drive.google.com/drive/folders/1FOC_MD6wdogyyX_7V1d4NDIO7
 2. Extract the `wav2lip256_avatar1.tar.gz` archive and copy the entire extracted folder to `data/avatars` of this project.
 
 - Run the Project  
-Execute: `python app.py --transport webrtc --model wav2lip --avatar_id wav2lip256_avatar1`  
+Execute: `python app.py --transport webrtc --renderer musetalk --avatar_id avator_1`  
 <font color=red>The server must open the following ports: TCP: 8010; UDP: 1-65536 </font>  
 
 You can access the client in two ways:  

@@ -1,7 +1,7 @@
 
 python app.py\
     --transport rtcpush \
-    --model musetalk \
+    --renderer musetalk \
     --multi_avatar True \
     --tts indextts2 \
     --listenport 6006 \
