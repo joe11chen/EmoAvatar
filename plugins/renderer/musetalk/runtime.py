@@ -58,18 +58,18 @@ class MuseTalkModelResource:
     this object instead of loading model assets repeatedly.
     """
 
-    def __init__(self, opt):
+    def __init__(self, config):
         avatar_ids = [EMOTION.DEFAULT, EMOTION.EMOTIONAL]
         self.model = load_model()
 
         self.transitions = None
-        if opt.multi_avatar:
+        if config.renderer.multi_avatar:
             self.transitions = load_transitions(avatar_ids)
             self.avatar = load_multi_avatar(avatar_ids)
         else:
-            self.avatar = load_avatar(opt.avatar_id)
+            self.avatar = load_avatar(config.renderer.avatar_id)
 
-        warm_up(opt.batch_size, self.model)
+        warm_up(config.renderer.batch_size, self.model)
 
 
 @register(PluginType.RENDERER, "musetalk")
@@ -79,24 +79,24 @@ class MuseReal(BaseReal):
         register_builtin_asr_plugins()
 
     @classmethod
-    def required_plugins(cls, opt) -> list[tuple[PluginType, str]]:
-        asr_plugin = getattr(opt, "asr", "museasr")
+    def required_plugins(cls, config) -> list[tuple[PluginType, str]]:
+        asr_plugin = config.plugins.asr
         return [
             (PluginType.ASR, asr_plugin),
         ]
 
     @classmethod
-    def prepare_shared(cls, opt):
-        return MuseTalkModelResource(opt)
+    def prepare_shared(cls, config):
+        return MuseTalkModelResource(config)
 
     @classmethod
-    def create_session(cls, session_opt, prepared):
+    def create_session(cls, session_config, prepared):
         if not isinstance(prepared, MuseTalkModelResource):
             raise ValueError("musetalk renderer expects MuseTalkModelResource payload")
 
-        asr_plugin = getattr(session_opt, "asr", "museasr")
+        asr_plugin = session_config.plugins.asr
         return cls(
-            session_opt,
+            session_config,
             resource=prepared,
             asr_plugin_name=asr_plugin,
         )
@@ -104,13 +104,13 @@ class MuseReal(BaseReal):
     @torch.no_grad()
     def __init__(
         self,
-        opt,
+        config,
         resource: MuseTalkModelResource,
         asr_plugin_name: str = "museasr",
     ):
-        super().__init__(opt)
-        self.fps = opt.fps
-        self.batch_size = opt.batch_size
+        super().__init__(config)
+        self.fps = config.runtime.fps
+        self.batch_size = config.renderer.batch_size
         self.res_frame_queue = mp.Queue(self.batch_size * 2)
         self.asr_plugin_name = asr_plugin_name
 
@@ -120,13 +120,13 @@ class MuseReal(BaseReal):
         self.asr = create(
             PluginType.ASR,
             self.asr_plugin_name,
-            opt=opt,
+            config=config,
             parent=self,
             audio_processor=self.audio_processor,
         )
         self.asr.warm_up()
 
-        self.multi_avatar = opt.multi_avatar
+        self.multi_avatar = config.renderer.multi_avatar
         self.transitions: dict[str, dict[str, any]] = self.resource.transitions
 
         if self.multi_avatar:
@@ -207,7 +207,7 @@ class MuseReal(BaseReal):
 
         while not quit_event.is_set():
             self.asr.run_step()
-            if video_track and video_track._queue.qsize() >= 1.5 * self.opt.batch_size:
+            if video_track and video_track._queue.qsize() >= 1.5 * self.config.renderer.batch_size:
                 logger.debug("sleep qsize=%d", video_track._queue.qsize())
                 time.sleep(0.04 * video_track._queue.qsize() * 0.8)
         logger.info("musereal thread stop")

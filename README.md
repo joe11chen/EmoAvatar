@@ -1,148 +1,192 @@
- # [English](./README-EN.md) | 中文版  
- <p align="center">
- <img src="./assets/LiveTalking-logo.jpg" align="middle" width = "300"/>
-<p align="center">
-<p align="center">
-    <a href="./LICENSE"><img src="https://img.shields.io/badge/license-Apache%202-dfd.svg"></a>
-    <a href="https://github.com/lipku/LiveTalking/releases"><img src="https://img.shields.io/github/v/release/lipku/LiveTalking?color=ffa"></a>
-    <a href=""><img src="https://img.shields.io/badge/python-3.10+-aff.svg"></a>
-    <a href=""><img src="https://img.shields.io/badge/os-linux%2C%20win%2C%20mac-pink.svg"></a>
-    <a href="https://github.com/lipku/LiveTalking/graphs/contributors"><img src="https://img.shields.io/github/contributors/lipku/LiveTalking?color=c4f042&style=flat-square"></a>
-    <a href="https://github.com/lipku/LiveTalking/network/members"><img src="https://img.shields.io/github/forks/lipku/LiveTalking?color=8ae8ff"></a>
-    <a href="https://github.com/lipku/LiveTalking/stargazers"><img src="https://img.shields.io/github/stars/lipku/LiveTalking?color=ccf"></a>
-</p>
+# LiveTalking（内部重构版）
 
- 实时交互流式数字人，实现音视频同步对话。基本可以达到商用效果  
-[wav2lip效果](https://www.bilibili.com/video/BV1scwBeyELA/) | [ernerf效果](https://www.bilibili.com/video/BV1G1421z73r/) | [musetalk效果](https://www.bilibili.com/video/BV1gm421N7vQ/)  
-国内镜像地址:<https://gitee.com/lipku/LiveTalking> 
+本项目是面向“情感数字人实时推理”的工程化版本，当前主链路已统一为：
 
-## 当前代码架构说明（请先读）
+`TTS(indextts2) -> ASR(museasr) -> Renderer(musetalk) -> WebRTC/RTCPush 输出`
 
-- 当前重构后的唯一有效说明文档：`docs/refactor/README.md`
-- 文档链接：[docs/refactor/README.md](./docs/refactor/README.md)
+目标是让新同事可以快速接手、稳定运行、并在 `tts/asr/renderer` 三个模块内扩展。
 
-## 为避免与3d数字人混淆，原项目metahuman-stream改名为livetalking，原有链接地址继续可用
+---
 
-## News
-- 2024.12.8 完善多并发，显存不随并发数增加
-- 2024.12.21 添加wav2lip、musetalk模型预热，解决第一次推理卡顿问题。感谢[@heimaojinzhangyz](https://github.com/heimaojinzhangyz)
-- 2024.12.28 添加数字人模型Ultralight-Digital-Human。 感谢[@lijihua2017](https://github.com/lijihua2017)
-- 2025.2.7 添加fish-speech tts
-- 2025.2.21 添加wav2lip256开源模型 感谢@不蠢不蠢
-- 2025.3.2 添加腾讯语音合成服务
-- 2025.3.16 支持mac gpu推理，感谢[@GcsSloop](https://github.com/GcsSloop) 
-- 2025.5.1 精简运行参数，ernerf模型移至git分支ernerf-rtmp
-- 2025.6.7 添加虚拟摄像头输出
-- 2025.7.5 添加豆包语音合成, 感谢[@ELK-milu](https://github.com/ELK-milu)
-- 2025.7.26 支持musetalk v1.5版本
+## 1. 当前状态（请先看）
 
-## Features
-1. 支持多种数字人模型: ernerf、musetalk、wav2lip、Ultralight-Digital-Human
-2. 支持声音克隆
-3. 支持数字人说话被打断
-4. 支持webrtc、虚拟摄像头输出
-5. 支持动作编排：不说话时播放自定义视频
-6. 支持多并发
+- 架构已收敛：仅保留三类插件
+  - `tts`
+  - `asr`
+  - `renderer`（模型渲染主干）
+- 启动入口统一：`--config <yaml>`
+- 传输层不再插件化（直接走固定实现）
+- 高频 frame 监控写入：`tmp/frame_monitor/session_<sessionid>.log`
 
-## 1. Installation
+---
 
-Tested on Ubuntu 24.04, Python3.10, Pytorch 2.5.0 and CUDA 12.4
+## 2. 目录结构（核心）
 
-### 1.1 Install dependency
+```text
+app.py                        # 启动入口
+core/
+  plugin_system.py            # 插件注册/创建/启动校验
+  contracts.py                # 事件帧数据约定
+  runtime/
+    tts/base.py               # TTS 基类
+    asr/base.py               # ASR 基类
+    renderer/base.py          # Renderer 基类（主渲染循环）
+
+plugins/
+  tts/indextts2.py            # 当前 TTS 实现
+  asr/musetalk_asr.py         # 当前 ASR 实现
+  renderer/musetalk/
+    runtime.py                # MuseTalk 渲染器
+    inference_workers.py      # 推理 worker
+    assets.py                 # 素材/过渡帧加载
+
+server/
+  runtime_context.py          # 运行上下文
+  rtc_runtime.py              # 会话创建、推流会话
+  http_routes.py              # HTTP/WebRTC 路由
+
+scripts/smoke/startup_smoke.sh # 启动冒烟脚本
+```
+
+---
+
+## 3. 快速启动
+
+### 3.1 环境
 
 ```bash
-conda create -n nerfstream python=3.10
-conda activate nerfstream
-#如果cuda版本不为12.4(运行nvidia-smi确认版本)，根据<https://pytorch.org/get-started/previous-versions/>安装对应版本的pytorch 
-conda install pytorch==2.5.0 torchvision==0.20.0 torchaudio==2.5.0 pytorch-cuda=12.4 -c pytorch -c nvidia
-pip install -r requirements.txt
-``` 
-安装常见问题[FAQ](https://livetalking-doc.readthedocs.io/zh-cn/latest/faq.html)  
-linux cuda环境搭建可以参考这篇文章 <https://zhuanlan.zhihu.com/p/674972886>  
-视频连不上解决方法 <https://mp.weixin.qq.com/s/MVUkxxhV2cgMMHalphr2cg>
-
-
-## 2. Quick Start
-- 下载模型  
-夸克云盘<https://pan.quark.cn/s/83a750323ef0>    
-GoogleDriver <https://drive.google.com/drive/folders/1FOC_MD6wdogyyX_7V1d4NDIO7P9NlSAJ?usp=sharing>  
-将wav2lip256.pth拷到本项目的models下, 重命名为wav2lip.pth;  
-将wav2lip256_avatar1.tar.gz解压后整个文件夹拷到本项目的data/avatars下
-- 运行  
-python app.py --transport webrtc --renderer musetalk --avatar_id avator_1  
-<font color=red>服务端需要开放端口 tcp:8010; udp:1-65536 </font>  
-客户端可以选用以下两种方式:  
-(1)用浏览器打开http://serverip:8010/webrtcapi.html , 先点‘start',播放数字人视频；然后在文本框输入任意文字，提交。数字人播报该段文字  
-(2)用客户端方式, 下载地址<https://pan.quark.cn/s/d7192d8ac19b>   
-
-- 快速体验  
-[在线镜像](https://www.compshare.cn/images/4458094e-a43d-45fe-9b57-de79253befe4?referral_code=3XW3852OBmnD089hMMrtuU&ytag=GPU_GitHub_livetalking) 用该镜像创建实例即可运行成功
-
-安装运行过程中如果访问不了huggingface，在运行前
+conda activate livetalking
 ```
-export HF_ENDPOINT=https://hf-mirror.com
-``` 
 
+### 3.2 配置化启动（推荐）
 
-## 3. More Usage
-使用说明: <https://livetalking-doc.readthedocs.io/>
-  
-## 4. Docker Run  
-不需要前面的安装，直接运行。
+默认配置文件：`config/app.yaml`
+
+```bash
+python app.py --config config/app.yaml
 ```
-docker run --gpus all -it --network=host --rm registry.cn-beijing.aliyuncs.com/codewithgpu2/lipku-metahuman-stream:2K9qaMBu8v
+
+当前线上 RTCPush 示例配置：`config/rtcpush.yaml`
+
+```bash
+python app.py --config config/rtcpush.yaml
 ```
-代码在/root/metahuman-stream，先git pull拉一下最新代码，然后执行命令同第2、3步 
 
-提供如下网络镜像
-- ucloud镜像: <https://www.compshare.cn/images/4458094e-a43d-45fe-9b57-de79253befe4?referral_code=3XW3852OBmnD089hMMrtuU&ytag=GPU_GitHub_livetalking>  
-[ucloud教程](https://livetalking-doc.readthedocs.io/zh-cn/latest/ucloud/ucloud.html) 
-- autodl镜像: <https://www.codewithgpu.com/i/lipku/livetalking/base>   
-[autodl教程](https://livetalking-doc.readthedocs.io/zh-cn/latest/autodl/README.html)，autodl由于不能开放udp端口，需要部署转发服务，如果看不到视频，请自行部署srs或turn服务
+WebRTC 示例配置：`config/webrtc.yaml`
 
+```bash
+python app.py --config config/webrtc.yaml
+```
 
+访问：
+- `http://<server-ip>:6006/webrtcapi.html`
+- 推荐前端：`http://<server-ip>:6006/dashboard.html`
 
-## 5. 性能
-- 性能主要跟cpu和gpu相关，每路视频压缩需要消耗cpu，cpu性能与视频分辨率正相关；每路口型推理跟gpu性能相关。  
-- 不说话时的并发数跟cpu相关，同时说话的并发数跟gpu相关。  
-- 后端日志inferfps表示显卡推理帧率，finalfps表示最终推流帧率。两者都要在25以上才能实时。如果inferfps在25以上，finalfps达不到25表示cpu性能不足。  
-- 实时推理性能  
+---
 
-模型    |显卡型号   |fps
-:----   |:---   |:---
-wav2lip256 | 3060    | 60
-wav2lip256 | 3080Ti  | 120
-musetalk   | 3080Ti  | 42
-musetalk   | 3090    | 45
-musetalk   | 4090    | 72 
+## 4. 冒烟与校验
 
-wav2lip256显卡3060以上即可，musetalk需要3080Ti以上。 
+### 4.1 编译校验
 
-## 6. 商业版
-提供如下扩展功能，适用于对开源项目已经比较熟悉，需要扩展产品功能的用户
-1. 高清wav2lip模型
-2. 完全语音交互，数字人回答过程中支持通过唤醒词或者按钮打断提问
-3. 实时同步字幕，给前端提供数字人每句话播报开始、结束事件
-4. 每个连接可以指定对应avatar和音色，avatar图片加载加速
-5. 支持不限时长的数字人形象avatar
-6. 提供实时音频流输入接口
-7. 数字人透明背景，叠加动态背景 
-8. avatar实时切换  
-9. python客户端  
+```bash
+python -m py_compile app.py core/plugin_system.py
+python -m compileall -q core plugins server app.py
+```
 
-更多详情<https://livetalking-doc.readthedocs.io/zh-cn/latest/service.html>
+### 4.2 启动冒烟
 
-## 7. 声明
-基于本项目开发并发布在B站、视频号、抖音等网站上的视频需带上LiveTalking水印和标识。
+```bash
+PORT=6006 STARTUP_TIMEOUT_SEC=300 bash scripts/smoke/startup_smoke.sh
+```
 
-## 赞助企业
-<table><tr><tb>
-<a href="https://www.ucloud.cn/site/active/gpu.html?cps_code=3dbaYol6yIuCwfUspnunTJ"><img src="./assets/ucloud.png" width="100"></a>
-</tb></tr></table>
+---
 
----  
-如果本项目对你有帮助，帮忙点个star。也欢迎感兴趣的朋友一起来完善该项目.
-* 知识星球: https://t.zsxq.com/7NMyO 沉淀高质量常见问题、最佳实践经验、问题解答  
-* 微信公众号：数字人技术    
-<img src="./assets/qrcode-wechat.jpg" align="middle" />
+## 5. 配置字段（严格模式）
 
+- 命令行只保留一个参数：`--config`
+- 业务参数全部从 YAML 读取，不再支持 CLI 覆盖
+
+YAML 对应结构（节选）：
+
+```yaml
+plugins:
+  tts: indextts2
+  asr: museasr
+  renderer: musetalk
+
+renderer:
+  avatar_id: avator_1
+  multi_avatar: true
+  batch_size: 16
+
+transport:
+  mode: rtcpush
+  rtc_audio_queue_maxsize: 600
+  rtc_video_queue_maxsize: 300
+  push_url: http://localhost:1985/rtc/v1/whip/?app=live&stream=livestream
+
+server:
+  listenport: 6006
+```
+
+---
+
+## 6. HTTP 接口（常用）
+
+来自 `server/http_routes.py`：
+
+- `POST /offer`：建立 WebRTC 会话
+- `POST /human`：文本输入（echo/chat）
+- `POST /humanaudio`：上传音频输入
+- `POST /interrupt_talk`：打断当前播报
+- `POST /set_audiotype`：切换自定义静默动作
+- `POST /record`：开始/结束录制
+- `POST /is_speaking`：查询当前是否在说话
+
+---
+
+## 7. 二次开发指南（新同事最常用）
+
+### 7.1 新增 TTS
+
+1. 在 `plugins/tts/` 新建模块  
+2. 继承 `core.runtime.tts.base.BaseTTS`  
+3. `@register(PluginType.TTS, "your_tts")`  
+4. 实现 `txt_to_audio`
+
+### 7.2 新增 ASR
+
+1. 在 `plugins/asr/` 新建模块  
+2. 继承 `core.runtime.asr.base.BaseASR`  
+3. `@register(PluginType.ASR, "your_asr")`  
+4. 实现 `run_step`
+
+### 7.3 新增 Renderer（新 talk 模型）
+
+1. 在 `plugins/renderer/<name>/runtime.py` 实现类  
+2. 继承 `core.runtime.renderer.base.BaseReal` 并注册  
+3. 实现类方法：
+   - `register_dependencies`
+   - `required_plugins`
+   - `prepare_shared`
+   - `create_session`
+4. 在 `render` 中接入主循环
+
+---
+
+## 8. 常见排障
+
+- 启动即失败：先看 `validate_startup_plugins` 报错（插件名错误最常见）
+- 首帧慢：确认模型与素材目录完整，首次 warmup 正常
+- 无画面/无音频：先跑 `startup_smoke.sh`，再看 `livetalking.log`
+- 队列堆积：观察日志中的 `rtcpush producer stats` 与 `tmp/frame_monitor/*`
+
+---
+
+## 9. 维护约定
+
+- 统一链路：只沿 `tts/asr/renderer` 扩展，不新增兼容分叉
+- 变更后必须执行：
+  1. `py_compile/compileall`
+  2. `startup_smoke.sh`
+- 文档与代码保持同步；架构变化先更新本 README

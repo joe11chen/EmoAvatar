@@ -3,6 +3,7 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any
 
+from core.config import AppConfig
 from core.runtime.renderer.base import BaseReal
 
 if TYPE_CHECKING:
@@ -11,7 +12,7 @@ if TYPE_CHECKING:
 
 @dataclass
 class RuntimeContext:
-    opt: Any
+    config: AppConfig
     renderer_cls: type[BaseReal] | None = None
     renderer_prepared: Any = None
     nerfreals: dict[int, BaseReal] = field(default_factory=dict)

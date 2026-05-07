@@ -9,6 +9,7 @@ READY_PATH="${READY_PATH:-/webrtcapi.html}"
 STARTUP_TIMEOUT_SEC="${STARTUP_TIMEOUT_SEC:-240}"
 POLL_INTERVAL_SEC="${POLL_INTERVAL_SEC:-2}"
 LOG_DIR="${LOG_DIR:-tmp/smoke}"
+SMOKE_CONFIG="${SMOKE_CONFIG:-config/webrtc.yaml}"
 
 mkdir -p "$LOG_DIR"
 LOG_FILE="${LOG_FILE:-$LOG_DIR/startup_smoke_$(date -u +%Y%m%dT%H%M%SZ).log}"
@@ -18,11 +19,7 @@ if [[ $# -gt 0 ]]; then
 else
   APP_CMD=(
     python app.py
-    --transport webrtc
-    --renderer musetalk
-    --multi_avatar True
-    --tts indextts2
-    --listenport "$PORT"
+    --config "$SMOKE_CONFIG"
   )
 fi
 

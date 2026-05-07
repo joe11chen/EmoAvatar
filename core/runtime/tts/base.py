@@ -19,11 +19,11 @@ class State(Enum):
 
 
 class BaseTTS:
-    def __init__(self, opt, parent: BaseReal):
-        self.opt = opt
+    def __init__(self, config, parent: BaseReal):
+        self.config = config
         self.parent = parent
 
-        self.fps = opt.fps
+        self.fps = config.runtime.fps
         self.sample_rate = 16000
         self.chunk = self.sample_rate // self.fps
         self.input_stream = BytesIO()
@@ -65,4 +65,3 @@ class BaseTTS:
 
     def txt_to_audio(self, msg: tuple[str, dict]):
         raise NotImplementedError
-

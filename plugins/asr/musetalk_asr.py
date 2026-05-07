@@ -24,8 +24,8 @@ from musetalk.whisper.audio2feature import Audio2Feature
 
 @register(PluginType.ASR, "museasr")
 class MuseASR(BaseASR):
-    def __init__(self, opt, parent, audio_processor:Audio2Feature):
-        super().__init__(opt,parent)
+    def __init__(self, config, parent, audio_processor:Audio2Feature):
+        super().__init__(config, parent)
         self.audio_processor = audio_processor
 
     def run_step(self):

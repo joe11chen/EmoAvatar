@@ -1,0 +1,37 @@
+runtime:
+  fps: 50
+  sync_window:
+    l: 10
+    m: 8
+    r: 10
+  frame:
+    width: 450
+    height: 450
+
+plugins:
+  tts: indextts2
+  asr: museasr
+  renderer: musetalk
+
+renderer:
+  avatar_id: avator_1
+  batch_size: 16
+  customvideo_config: ""
+  multi_avatar: false
+  frame_monitor_dir: tmp/frame_monitor
+
+tts:
+  ref_file: data/audios/voice_11.wav
+  ref_text: null
+  server: http://127.0.0.1:7860/
+  max_tokens: 120
+
+transport:
+  mode: rtcpush
+  push_url: http://localhost:1985/rtc/v1/whip/?app=live&stream=livestream
+  rtc_audio_queue_maxsize: 600
+  rtc_video_queue_maxsize: 300
+
+server:
+  max_session: 1
+  listenport: 8010

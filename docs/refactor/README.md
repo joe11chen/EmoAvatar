@@ -37,11 +37,11 @@ scripts/smoke/startup_smoke.sh
 
 ## 3. Startup and Session Flow
 
-1. `app.py` 解析参数，`--renderer` 为唯一模型入口。
-2. `validate_startup_plugins(opt)` 在启动时做插件可用性校验（fail fast）。
-3. `renderer_cls = create(PluginType.RENDERER, opt.renderer, instantiate=False)` 取到渲染器类。
-4. `renderer_cls.prepare_shared(opt)` 一次性加载进程级重资源（模型、素材）。
-5. 每个会话由 `renderer_cls.create_session(session_opt, prepared)` 创建。
+1. `app.py` 仅接收 `--config <yaml>`，严格按 YAML 读取配置。
+2. `validate_startup_plugins(config)` 在启动时做插件可用性校验（fail fast）。
+3. `renderer_cls = create(PluginType.RENDERER, config.plugins.renderer, instantiate=False)` 取到渲染器类。
+4. `renderer_cls.prepare_shared(config)` 一次性加载进程级重资源（模型、素材）。
+5. 每个会话由 `renderer_cls.create_session(session_config, prepared)` 创建。
 6. `MuseReal.render()` 启动 TTS 线程、推理线程、帧处理线程并持续消费 ASR 步进。
 
 关键点：
@@ -72,7 +72,7 @@ scripts/smoke/startup_smoke.sh
 2. 类继承 `core.runtime.tts.base.BaseTTS`。
 3. 使用 `@register(PluginType.TTS, "mytts")` 注册。
 4. 实现 `txt_to_audio(self, msg)`。
-5. 启动参数使用 `--tts mytts`。
+5. 在 YAML 中设置 `plugins.tts: mytts`。
 
 ### Add a new ASR
 
@@ -104,17 +104,21 @@ python -m compileall -q core plugins server app.py
 
 启动冒烟：
 ```bash
-PORT=6046 STARTUP_TIMEOUT_SEC=300 bash scripts/smoke/startup_smoke.sh
-PORT=6047 STARTUP_TIMEOUT_SEC=300 \
-bash scripts/smoke/startup_smoke.sh \
-  python app.py --transport webrtc --renderer musetalk --asr museasr --multi_avatar True --tts indextts2 --listenport 6047
+PORT=6006 STARTUP_TIMEOUT_SEC=300 \
+SMOKE_CONFIG=config/webrtc.yaml \
+bash scripts/smoke/startup_smoke.sh
 ```
+
+配置文件示例：
+- `config/app.yaml`：项目默认结构化配置。
+- `config/rtcpush.yaml`：RTCPush 运行示例（含队列与推流地址）。
+- `config/webrtc.yaml`：WebRTC 冒烟与联调示例。
 
 ## 8. Notes
 
 - `import cv2` 在 `app.py` 顶层保留，避免与部分网络库加载顺序冲突。
 - 当前文档以“代码现状”为准；后续若变更插件入口或目录结构，请优先更新本文档。
-- 高频 frame 监控已独立写入 `tmp/frame_monitor/session_<sessionid>.log`，避免污染主日志；可通过 `opt.frame_monitor_dir` 覆盖目录。
+- 高频 frame 监控已独立写入 `tmp/frame_monitor/session_<sessionid>.log`，避免污染主日志；可通过 `renderer.frame_monitor_dir` 覆盖目录。
 
 ## 9. Redundancy & Complexity Check (Current)
 

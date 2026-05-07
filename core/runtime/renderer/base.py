@@ -59,38 +59,38 @@ class BaseReal:
         """Register dependent plugin families required by this renderer."""
 
     @classmethod
-    def required_plugins(cls, opt) -> list[tuple[PluginType, str]]:
+    def required_plugins(cls, config) -> list[tuple[PluginType, str]]:
         """Declare concrete plugin names required for startup validation."""
-        del opt
+        del config
         return []
 
     @classmethod
-    def prepare_shared(cls, opt) -> Any:
+    def prepare_shared(cls, config) -> Any:
         """
         Prepare process-level reusable assets (e.g. models, avatar caches).
         Called once during startup.
         """
-        del opt
+        del config
         return None
 
     @classmethod
-    def create_session(cls, session_opt, prepared: Any) -> "BaseReal":
+    def create_session(cls, session_config, prepared: Any) -> "BaseReal":
         """Create a per-session renderer instance from prepared shared assets."""
         del prepared
-        return cls(session_opt)
+        return cls(session_config)
 
-    def __init__(self, opt):
-        self.opt = opt
+    def __init__(self, config):
+        self.config = config
         self.sample_rate = 16000
-        self.chunk = self.sample_rate // opt.fps
-        self.sessionid = self.opt.sessionid
+        self.chunk = self.sample_rate // config.runtime.fps
+        self.sessionid = self.config.sessionid
 
         register_builtin_plugins()
         try:
-            self.tts = create(PluginType.TTS, opt.tts, opt=opt, parent=self)
+            self.tts = create(PluginType.TTS, config.plugins.tts, config=config, parent=self)
         except KeyError as exc:
             available = ", ".join(available_plugins(PluginType.TTS))
-            raise ValueError(f"Unknown tts plugin '{opt.tts}'. Available: {available}") from exc
+            raise ValueError(f"Unknown tts plugin '{config.plugins.tts}'. Available: {available}") from exc
 
         self.speaking = False
 
@@ -139,7 +139,7 @@ class BaseReal:
         return self.speaking
 
     def _load_custom_media(self):
-        for item in self.opt.customopt:
+        for item in self.config.custom_actions:
             logger.info(item)
             input_img_list = glob.glob(os.path.join(item["imgpath"], "*.[jpJP][pnPN]*[gG]"))
             input_img_list = sorted(input_img_list, key=lambda x: int(os.path.splitext(os.path.basename(x))[0]))
@@ -166,6 +166,10 @@ class BaseReal:
         if self.recording:
             return
 
+        os.makedirs("data", exist_ok=True)
+        self._record_video_path = f"temp{self.config.sessionid}.mp4"
+        self._record_audio_path = f"temp{self.config.sessionid}.aac"
+
         command = [
             "ffmpeg",
             "-y",
@@ -186,10 +190,9 @@ class BaseReal:
             "yuv420p",
             "-vcodec",
             "h264",
-            f"temp{self.opt.sessionid}.mp4",
+            self._record_video_path,
         ]
         self._record_video_pipe = subprocess.Popen(command, shell=False, stdin=subprocess.PIPE)
-
         acommand = [
             "ffmpeg",
             "-y",
@@ -204,7 +207,7 @@ class BaseReal:
             "-",
             "-acodec",
             "aac",
-            f"temp{self.opt.sessionid}.aac",
+            self._record_audio_path,
         ]
         self._record_audio_pipe = subprocess.Popen(acommand, shell=False, stdin=subprocess.PIPE)
         self.recording = True
@@ -228,7 +231,7 @@ class BaseReal:
         self._record_audio_pipe.stdin.close()
         self._record_audio_pipe.wait()
         cmd_combine_audio = (
-            f"ffmpeg -y -i temp{self.opt.sessionid}.aac -i temp{self.opt.sessionid}.mp4 "
+            f"ffmpeg -y -i {self._record_audio_path} -i {self._record_video_path} "
             "-c:v copy -c:a copy data/record.mp4"
         )
         os.system(cmd_combine_audio)
@@ -261,9 +264,6 @@ class BaseReal:
         if self.multi_avatar:
             return face_index[0], face_index[1]
         return face_index, EMOTION.DEFAULT
-
-    def _normalize_primary_event(self, audio_frames):
-        return audio_frames[0][2]
 
     @staticmethod
     def _is_silence_audio(audio_frames) -> bool:
@@ -299,7 +299,7 @@ class BaseReal:
         return audio_seq, enqueued_count, True
 
     def _build_frame_monitor_path(self) -> str:
-        monitor_dir = getattr(self.opt, "frame_monitor_dir", "tmp/frame_monitor")
+        monitor_dir = self.config.renderer.frame_monitor_dir
         os.makedirs(monitor_dir, exist_ok=True)
         return os.path.join(monitor_dir, f"session_{self.sessionid}.log")
 
@@ -466,13 +466,14 @@ class BaseReal:
 
                 idx, emo = self._resolve_face_index(face_index)
 
-                primary_event = self._normalize_primary_event(audio_frames)
+                primary_event = audio_frames[0][2]
                 status = primary_event.get("status") or ""
                 if status != prev_status:
                     logger.debug("status changed: %s -> %s", prev_status, status)
 
                 prev_status = status
-                current_speaking = not self._is_silence_audio(audio_frames)
+                is_silence_audio = self._is_silence_audio(audio_frames)
+                current_speaking = not is_silence_audio
                 if current_speaking != _last_speaking:
                     logger.info(
                         "状态切换：%s → %s",
@@ -487,7 +488,7 @@ class BaseReal:
                     if combine_frame is None:
                         continue
 
-                elif self._is_silence_audio(audio_frames):
+                elif is_silence_audio:
                     self.speaking = False
                     combine_frame, _last_silent_frame = self._build_silence_frame(
                         idx,
@@ -513,10 +514,6 @@ class BaseReal:
                     )
                     if combine_frame is None:
                         continue
-
-                if combine_frame is None:
-                    logger.warning("combine_frame is None, skip this render cycle. status=%s emo=%s idx=%s", status, emo, idx)
-                    continue
 
                 combine_frame = combine_frame.copy() if hasattr(combine_frame, "copy") else combine_frame
                 extra_text = str(primary_event)
@@ -556,7 +553,7 @@ class BaseReal:
                     )
                     stats_line = self._build_producer_stats_line(stats)
                     self._write_frame_monitor_line(frame_log, stats_line)
-                    self._log_producer_stats(stats)
+                    # self._log_producer_stats(stats)
                     frame_log.flush()
                     monitor_video_enqueued = 0
                     monitor_audio_enqueued = 0

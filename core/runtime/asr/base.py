@@ -29,21 +29,21 @@ if TYPE_CHECKING:
 
 class BaseASR:
 
-    def __init__(self, opt, parent:BaseReal = None):
-        self.opt = opt
+    def __init__(self, config, parent:BaseReal = None):
+        self.config = config
         self.parent = parent
 
-        self.fps = opt.fps # 20 ms per frame
+        self.fps = config.runtime.fps # 20 ms per frame
         self.sample_rate = 16000
         self.chunk = self.sample_rate // self.fps # 320 samples per chunk (20ms * 16000 / 1000)
         self.queue = Queue()
         self.output_queue = mp.Queue()
 
-        self.batch_size = opt.batch_size
+        self.batch_size = config.renderer.batch_size
 
         self.frames = []
-        self.stride_left_size = opt.l
-        self.stride_right_size = opt.r
+        self.stride_left_size = config.runtime.sync_window.l
+        self.stride_right_size = config.runtime.sync_window.r
         #self.context_size = 10
         self.feat_queue = mp.Queue(2)
 

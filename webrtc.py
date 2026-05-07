@@ -243,9 +243,9 @@ class HumanPlayer:
 
         audio_queue_maxsize = 200
         video_queue_maxsize = 100
-        if hasattr(nerfreal, "opt"):
-            audio_queue_maxsize = getattr(nerfreal.opt, "rtc_audio_queue_maxsize", audio_queue_maxsize)
-            video_queue_maxsize = getattr(nerfreal.opt, "rtc_video_queue_maxsize", video_queue_maxsize)
+        if hasattr(nerfreal, "config"):
+            audio_queue_maxsize = nerfreal.config.transport.rtc_audio_queue_maxsize
+            video_queue_maxsize = nerfreal.config.transport.rtc_video_queue_maxsize
 
         self.__audio = PlayerStreamTrack(self, kind="audio", queue_maxsize=audio_queue_maxsize)
         self.__video = PlayerStreamTrack(self, kind="video", queue_maxsize=video_queue_maxsize)

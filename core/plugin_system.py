@@ -133,20 +133,20 @@ def register_builtin_plugins() -> None:
     register_builtin_renderer_plugins()
 
 
-def validate_startup_plugins(opt) -> None:
+def validate_startup_plugins(config) -> None:
     register_builtin_plugins()
 
-    renderer_name = getattr(opt, "renderer", None)
+    renderer_name = getattr(config.plugins, "renderer", None)
     if not renderer_name:
-        raise ValueError("renderer plugin name is required (use --renderer)")
+        raise ValueError("renderer plugin name is required (set plugins.renderer in config)")
     renderer_cls = create(PluginType.RENDERER, renderer_name, instantiate=False)
     renderer_cls.register_dependencies()
 
     required = [
         (PluginType.RENDERER, renderer_name),
-        (PluginType.TTS, opt.tts),
+        (PluginType.TTS, config.plugins.tts),
     ]
-    required.extend(renderer_cls.required_plugins(opt))
+    required.extend(renderer_cls.required_plugins(config))
 
     errors: list[str] = []
     for plugin_type, name in required:

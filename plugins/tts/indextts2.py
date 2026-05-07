@@ -25,14 +25,14 @@ def _normalize_emotion(value) -> EMOTION:
 
 @register(PluginType.TTS, "indextts2")
 class IndexTTS2(BaseTTS):
-    def __init__(self, opt, parent):
-        super().__init__(opt, parent)
-        self.server_url = getattr(opt, "TTS_SERVER", "http://127.0.0.1:7860/")
-        self.max_tokens = getattr(opt, "MAX_TOKENS", 120)
+    def __init__(self, config, parent):
+        super().__init__(config, parent)
+        self.server_url = config.tts.server
+        self.max_tokens = config.tts.max_tokens
         self.prev_emo = EMOTION.DEFAULT
 
         default_ref = Path("data/audios/voice_11.wav")
-        ref_file = Path(str(getattr(opt, "REF_FILE", default_ref)))
+        ref_file = Path(str(config.tts.ref_file))
         self.ref_audio_path = ref_file if ref_file.exists() else default_ref
 
         try:
