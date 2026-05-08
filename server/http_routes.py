@@ -19,6 +19,27 @@ if TYPE_CHECKING:
 
 
 def register_http_routes(appasync: web.Application, context: RuntimeContext) -> None:
+    def _navigation_items(mode: str) -> list[dict[str, str]]:
+        common = [
+            {"label": "综合控制台", "path": "/dashboard.html", "desc": "统一控制面板"},
+        ]
+        if mode == "webrtc":
+            return common + [
+                {"label": "WebRTC 基础页", "path": "/webrtcapi.html", "desc": "视频对话主入口"},
+                {"label": "WebRTC 聊天页", "path": "/webrtcchat.html", "desc": "文本聊天示例"},
+            ]
+        if mode == "rtcpush":
+            return common + [
+                {"label": "RTCPush 基础页", "path": "/rtcpushapi.html", "desc": "推流模式主入口"},
+                {"label": "RTCPush 聊天页", "path": "/rtcpushchat.html", "desc": "文本聊天示例"},
+            ]
+        if mode == "httpfile":
+            return common + [
+                {"label": "HTTP 视频任务", "path": "/httpfile.html", "desc": "video_jobs 任务页"},
+                {"label": "HTTP 纯音频任务", "path": "/audiofile.html", "desc": "audio_jobs 任务页"},
+            ]
+        return common
+
     def _session_or_raise(sessionid: int):
         session = context.nerfreals.get(sessionid)
         if session is None:
@@ -32,6 +53,13 @@ def register_http_routes(appasync: web.Application, context: RuntimeContext) -> 
             raise RuntimeError("video jobs manager is not initialized")
         return context.video_jobs
 
+    def _audio_jobs_or_raise():
+        if context.config.transport.mode != "httpfile":
+            raise ValueError("audio_jobs API is only available when transport.mode=httpfile")
+        if context.audio_jobs is None:
+            raise RuntimeError("audio jobs manager is not initialized")
+        return context.audio_jobs
+
     def _ok_response(payload: dict | None = None) -> web.Response:
         body = {"code": 0, "msg": "ok"}
         if payload:
@@ -41,6 +69,23 @@ def register_http_routes(appasync: web.Application, context: RuntimeContext) -> 
     def _error_response(exc: Exception) -> web.Response:
         logger.exception("exception:")
         return web.Response(content_type="application/json", text=json.dumps({"code": -1, "msg": str(exc)}))
+
+    async def nav_home(_request):
+        return web.FileResponse(path=Path("web/nav.html"))
+
+    async def runtime_info(_request):
+        try:
+            mode = str(context.config.transport.mode)
+            return _ok_response(
+                {
+                    "data": {
+                        "transport_mode": mode,
+                        "entries": _navigation_items(mode),
+                    }
+                }
+            )
+        except Exception as exc:
+            return _error_response(exc)
 
     async def offer(request):
         params = await request.json()
@@ -201,6 +246,54 @@ def register_http_routes(appasync: web.Application, context: RuntimeContext) -> 
         except Exception as exc:
             return _error_response(exc)
 
+    async def create_audio_job(request):
+        try:
+            request_perf_ts = time.perf_counter()
+            params = await request.json()
+            text = params.get("text", "")
+            emotion = params.get("emotion", "")
+            audio_jobs = _audio_jobs_or_raise()
+            job = await audio_jobs.submit(text, emotion, request_perf_ts=request_perf_ts)
+            return _ok_response({"data": {"job_id": job["job_id"], "status": job["status"]}})
+        except Exception as exc:
+            return _error_response(exc)
+
+    async def get_audio_job(request):
+        try:
+            job_id = request.match_info.get("job_id", "")
+            job = _audio_jobs_or_raise().get(job_id)
+            if job is None:
+                raise ValueError(f"invalid job_id: {job_id}")
+            return _ok_response({"data": job})
+        except Exception as exc:
+            return _error_response(exc)
+
+    async def get_audio_job_file(request):
+        try:
+            job_id = request.match_info.get("job_id", "")
+            audio_jobs = _audio_jobs_or_raise()
+            job = audio_jobs.get(job_id)
+            if job is None:
+                raise ValueError(f"invalid job_id: {job_id}")
+            if job["status"] != "succeeded":
+                raise ValueError(f"job is not ready: status={job['status']}")
+            file_path = Path(str(job["file_path"]))
+            if not file_path.exists():
+                raise FileNotFoundError(f"job file not found: {file_path}")
+            request_to_file_sec = audio_jobs.mark_file_served(job_id)
+            if request_to_file_sec is not None:
+                logger.info("[httpfile-prof] audio_request_to_file_sec=%.3f job_id=%s", request_to_file_sec, job_id)
+            if request.query.get("download") == "1":
+                return web.FileResponse(
+                    path=file_path,
+                    headers={"Content-Disposition": f'attachment; filename=\"{job_id}.wav\"'},
+                )
+            return web.FileResponse(path=file_path)
+        except Exception as exc:
+            return _error_response(exc)
+
+    appasync.router.add_get("/", nav_home)
+    appasync.router.add_get("/runtime_info", runtime_info)
     appasync.router.add_post("/offer", offer)
     appasync.router.add_post("/human", human)
     appasync.router.add_post("/humanaudio", humanaudio)
@@ -211,6 +304,9 @@ def register_http_routes(appasync: web.Application, context: RuntimeContext) -> 
     appasync.router.add_post("/video_jobs", create_video_job)
     appasync.router.add_get("/video_jobs/{job_id}", get_video_job)
     appasync.router.add_get("/video_jobs/{job_id}/file", get_video_job_file)
+    appasync.router.add_post("/audio_jobs", create_audio_job)
+    appasync.router.add_get("/audio_jobs/{job_id}", get_audio_job)
+    appasync.router.add_get("/audio_jobs/{job_id}/file", get_audio_job_file)
     appasync.router.add_static("/", path="web")
 
 
@@ -218,6 +314,8 @@ def build_on_shutdown_handler(context: RuntimeContext):
     async def on_shutdown(_app):
         if context.video_jobs is not None:
             await context.video_jobs.shutdown()
+        if context.audio_jobs is not None:
+            await context.audio_jobs.shutdown()
         await shutdown_peer_connections(context)
 
     return on_shutdown

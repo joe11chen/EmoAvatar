@@ -18,3 +18,4 @@ class RuntimeContext:
     nerfreals: dict[int, BaseReal] = field(default_factory=dict)
     pcs: set["RTCPeerConnection"] = field(default_factory=set)
     video_jobs: Any = None
+    audio_jobs: Any = None

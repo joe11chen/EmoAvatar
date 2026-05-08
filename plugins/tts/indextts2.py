@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import time
 from pathlib import Path
+from typing import Any
 
 import cv2
 import numpy as np
@@ -169,6 +170,66 @@ class IndexTTS2(BaseTTS):
         except Exception:
             logger.exception("IndexTTS2 API call failed")
             return None
+
+    def synthesize_to_wav(self, text: str, emotion: EMOTION | str | None, output_path: str) -> dict[str, Any]:
+        tts_start = time.perf_counter()
+        emo = _normalize_emotion(emotion)
+        segments = self.split_text(text)
+        if not segments:
+            logger.warning("IndexTTS2 split produced no segments, fallback to raw text")
+            segments = [text]
+
+        merged: list[np.ndarray] = []
+        for seg_idx, segment_text in enumerate(segments):
+            emotion_vector = EMOTION_VECTOR.get(emo, EMOTION_VECTOR[EMOTION.DEFAULT])
+            audio_file = self.indextts2_generate(segment_text, emotion_vector)
+            if not audio_file:
+                logger.error("IndexTTS2 generation failed for segment %d", seg_idx + 1)
+                continue
+
+            stream, sample_rate = sf.read(audio_file)
+            stream = stream.astype(np.float32)
+            if stream.ndim > 1:
+                stream = stream[:, 0]
+            if sample_rate != self.sample_rate and stream.shape[0] > 0:
+                if self.config.transport.mode == "httpfile":
+                    stream = self._fast_resample_linear(stream, sample_rate, self.sample_rate)
+                else:
+                    stream = resampy.resample(x=stream, sr_orig=sample_rate, sr_new=self.sample_rate)
+
+            if self.config.transport.mode == "httpfile" and stream.shape[0] > 0:
+                silence_th = 0.003
+                keep_tail_samples = int(0.12 * self.sample_rate)
+                nz = np.where(np.abs(stream) > silence_th)[0]
+                if nz.size > 0:
+                    end_idx = min(stream.shape[0], int(nz[-1]) + 1 + keep_tail_samples)
+                    stream = stream[:end_idx]
+                else:
+                    stream = stream[: max(self.chunk, keep_tail_samples)]
+
+            if stream.shape[0] > 0:
+                merged.append(stream)
+                if seg_idx < len(segments) - 1:
+                    merged.append(np.zeros(int(0.02 * self.sample_rate), dtype=np.float32))
+
+        if merged:
+            final_stream = np.concatenate(merged, axis=0)
+        else:
+            final_stream = np.zeros(self.chunk, dtype=np.float32)
+
+        out_path = Path(output_path)
+        out_path.parent.mkdir(parents=True, exist_ok=True)
+        sf.write(str(out_path), final_stream, self.sample_rate, subtype="PCM_16")
+
+        tts_total_sec = time.perf_counter() - tts_start
+        return {
+            "tts_total_sec": tts_total_sec,
+            "segments": len(segments),
+            "audio_duration_sec": float(final_stream.shape[0]) / float(self.sample_rate),
+            "sample_rate": self.sample_rate,
+            "num_samples": int(final_stream.shape[0]),
+            "path": str(out_path),
+        }
 
     def file_to_stream(
         self,

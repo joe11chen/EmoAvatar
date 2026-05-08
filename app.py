@@ -32,6 +32,7 @@ from logger import logger
 from server.http_routes import build_on_shutdown_handler, register_http_routes
 from server.rtc_runtime import run_push_session
 from server.runtime_context import RuntimeContext
+from server.audio_jobs import AudioJobManager
 from server.video_jobs import VideoJobManager
 
 
@@ -62,12 +63,15 @@ def create_web_app(context: RuntimeContext):
 
     if context.config.transport.mode == "httpfile":
         context.video_jobs = VideoJobManager(context)
+        context.audio_jobs = AudioJobManager(context)
 
-        async def _start_video_jobs(_app):
+        async def _start_httpfile_jobs(_app):
             if context.video_jobs:
                 await context.video_jobs.start()
+            if context.audio_jobs:
+                await context.audio_jobs.start()
 
-        appasync.on_startup.append(_start_video_jobs)
+        appasync.on_startup.append(_start_httpfile_jobs)
 
     appasync.on_shutdown.append(build_on_shutdown_handler(context))
     register_http_routes(appasync, context)

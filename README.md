@@ -85,9 +85,11 @@ python app.py --config config/httpfile.yaml
 ```
 
 访问：
+- 导航主页：`http://<server-ip>:6006/`
 - `http://<server-ip>:6006/webrtcapi.html`
 - 推荐前端：`http://<server-ip>:6006/dashboard.html`
 - HTTP 文件模式前端：`http://<server-ip>:6006/httpfile.html`
+- HTTP 纯音频模式前端：`http://<server-ip>:6006/audiofile.html`
 
 ---
 
@@ -146,6 +148,9 @@ HTTP 文件模式可用配置项（YAML）：
 
 来自 `server/http_routes.py`：
 
+上游对接请优先参考独立接口文档：  
+`docs/httpfile_jobs_api.md`
+
 - `POST /offer`：建立 WebRTC 会话
 - `POST /human`：文本输入（echo/chat）
 - `POST /humanaudio`：上传音频输入
@@ -159,6 +164,19 @@ HTTP 文件模式可用配置项（YAML）：
 - `POST /video_jobs`：提交文本任务
 - `GET /video_jobs/{job_id}`：查询任务状态
 - `GET /video_jobs/{job_id}/file`：获取生成 MP4（支持 `?download=1`）
+
+纯音频任务（需求约束，`transport.mode=httpfile`）：
+
+- 目标：仅输出语音文件，不启动数字人渲染，不生成视频
+- 主链路：仅复用 TTS（不走 ASR / MuseTalk / process_frames）
+- 产物路径：`tmp/audio_jobs/{job_id}.wav`
+- 接口：
+  - `POST /audio_jobs`：提交文本任务
+  - `GET /audio_jobs/{job_id}`：查询任务状态
+  - `GET /audio_jobs/{job_id}/file`：获取 WAV（支持 `?download=1`）
+- 返回约定与 video_jobs 保持一致：
+  - 成功：`{"code":0,"msg":"ok","data":...}`
+  - 失败：`{"code":-1,"msg":"..."}`
 
 返回约定：
 
