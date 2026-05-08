@@ -58,6 +58,7 @@ class TransportConfig:
     push_url: str
     rtc_audio_queue_maxsize: int
     rtc_video_queue_maxsize: int
+    httpfile_batch_cap: int = 8
 
 
 @dataclass
@@ -187,6 +188,7 @@ def load_app_config(config_path: str) -> AppConfig:
             _get_required(transport_data, "rtc_video_queue_maxsize", "transport.rtc_video_queue_maxsize"),
             "transport.rtc_video_queue_maxsize",
         ),
+        httpfile_batch_cap=_as_int(transport_data.get("httpfile_batch_cap", 8), "transport.httpfile_batch_cap"),
     )
     if transport.mode not in {"webrtc", "rtcpush", "httpfile"}:
         raise ValueError("transport.mode must be one of: webrtc, rtcpush, httpfile")

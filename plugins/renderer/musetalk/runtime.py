@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import copy
 import time
 from threading import Event, Thread
 
@@ -144,7 +143,7 @@ class MuseReal(BaseReal):
         if self.multi_avatar:
             avatar = self.avatars[emo]
             bbox = avatar.coord_list_cycle[idx]
-            ori_frame = copy.deepcopy(avatar.frame_list_cycle[idx])
+            ori_frame = avatar.frame_list_cycle[idx]
             x1, y1, x2, y2 = bbox
 
             res_frame = cv2.resize(pred_frame.astype("uint8"), (x2 - x1, y2 - y1))
@@ -153,7 +152,7 @@ class MuseReal(BaseReal):
             return get_image_blending(ori_frame, res_frame, bbox, mask, mask_crop_box)
 
         bbox = self.coord_list_cycle[idx]
-        ori_frame = copy.deepcopy(self.frame_list_cycle[idx])
+        ori_frame = self.frame_list_cycle[idx]
         x1, y1, x2, y2 = bbox
 
         res_frame = cv2.resize(pred_frame.astype("uint8"), (x2 - x1, y2 - y1))
@@ -166,6 +165,7 @@ class MuseReal(BaseReal):
         self.tts.render(quit_event)
 
         infer_quit_event = Event()
+        profiler = self._get_httpfile_profiler()
         infer_target = multi_avatar_inference if self.multi_avatar else inference
         if self.multi_avatar:
             infer_thread = Thread(
@@ -181,6 +181,7 @@ class MuseReal(BaseReal):
                     self.unet,
                     self.pe,
                     self.timesteps,
+                    profiler,
                 ),
             )
         else:
@@ -197,6 +198,7 @@ class MuseReal(BaseReal):
                     self.unet,
                     self.pe,
                     self.timesteps,
+                    profiler,
                 ),
             )
         infer_thread.start()

@@ -3,6 +3,7 @@ from __future__ import annotations
 import time
 from pathlib import Path
 
+import cv2
 import numpy as np
 import resampy
 import soundfile as sf
@@ -87,10 +88,11 @@ class IndexTTS2(BaseTTS):
             self._emit_transition_silence(self.prev_emo, EMOTION.DEFAULT, textevent, text)
             self.prev_emo = EMOTION.DEFAULT
 
+        tts_total_sec = time.perf_counter() - tts_start
         if self.config.transport.mode == "httpfile":
             logger.info(
                 "[httpfile-prof] tts_total_sec=%.3f segments=%d text_len=%d",
-                time.perf_counter() - tts_start,
+                tts_total_sec,
                 len(segments),
                 len(text),
             )
@@ -183,7 +185,11 @@ class IndexTTS2(BaseTTS):
             if stream.ndim > 1:
                 stream = stream[:, 0]
             if sample_rate != self.sample_rate and stream.shape[0] > 0:
-                stream = resampy.resample(x=stream, sr_orig=sample_rate, sr_new=self.sample_rate)
+                # httpfile batch mode prefers lower latency; use a faster linear resampler.
+                if self.config.transport.mode == "httpfile":
+                    stream = self._fast_resample_linear(stream, sample_rate, self.sample_rate)
+                else:
+                    stream = resampy.resample(x=stream, sr_orig=sample_rate, sr_new=self.sample_rate)
 
             if self.config.transport.mode == "httpfile" and stream.shape[0] > 0:
                 # Batch mode: trim long trailing silence from TTS output to reduce unnecessary render tail.
@@ -229,3 +235,14 @@ class IndexTTS2(BaseTTS):
         except Exception:
             logger.exception("IndexTTS2 file_to_stream failed")
             return 0
+
+    @staticmethod
+    def _fast_resample_linear(stream: np.ndarray, sr_orig: int, sr_new: int) -> np.ndarray:
+        if sr_orig == sr_new or stream.shape[0] == 0:
+            return stream.astype(np.float32, copy=False)
+        new_len = int(round(stream.shape[0] * float(sr_new) / float(sr_orig)))
+        if new_len <= 1:
+            return stream[:1].astype(np.float32, copy=False)
+        src = stream.reshape(1, -1).astype(np.float32, copy=False)
+        resized = cv2.resize(src, (new_len, 1), interpolation=cv2.INTER_LINEAR)
+        return resized.reshape(-1).astype(np.float32, copy=False)

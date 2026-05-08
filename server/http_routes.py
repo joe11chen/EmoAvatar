@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import time
 from pathlib import Path
 from typing import TYPE_CHECKING
 
@@ -156,10 +157,12 @@ def register_http_routes(appasync: web.Application, context: RuntimeContext) -> 
 
     async def create_video_job(request):
         try:
+            request_perf_ts = time.perf_counter()
             params = await request.json()
             text = params.get("text", "")
             emotion = params.get("emotion", "")
-            job = await _video_jobs_or_raise().submit(text, emotion)
+            video_jobs = _video_jobs_or_raise()
+            job = await video_jobs.submit(text, emotion, request_perf_ts=request_perf_ts)
             return _ok_response({"data": {"job_id": job["job_id"], "status": job["status"]}})
         except Exception as exc:
             return _error_response(exc)
@@ -177,7 +180,8 @@ def register_http_routes(appasync: web.Application, context: RuntimeContext) -> 
     async def get_video_job_file(request):
         try:
             job_id = request.match_info.get("job_id", "")
-            job = _video_jobs_or_raise().get(job_id)
+            video_jobs = _video_jobs_or_raise()
+            job = video_jobs.get(job_id)
             if job is None:
                 raise ValueError(f"invalid job_id: {job_id}")
             if job["status"] != "succeeded":
@@ -185,6 +189,9 @@ def register_http_routes(appasync: web.Application, context: RuntimeContext) -> 
             file_path = Path(str(job["file_path"]))
             if not file_path.exists():
                 raise FileNotFoundError(f"job file not found: {file_path}")
+            request_to_file_sec = video_jobs.mark_file_served(job_id)
+            if request_to_file_sec is not None:
+                logger.info("[httpfile-prof] request_to_file_sec=%.3f job_id=%s", request_to_file_sec, job_id)
             if request.query.get("download") == "1":
                 return web.FileResponse(
                     path=file_path,

@@ -6,6 +6,7 @@ import glob
 import os
 import queue
 import subprocess
+import threading
 import time
 from io import BytesIO
 from typing import Any
@@ -97,6 +98,10 @@ class BaseReal:
         self.recording = False
         self._record_video_pipe = None
         self._record_audio_pipe = None
+        self._record_video_async_enabled = False
+        self._record_video_queue: queue.Queue | None = None
+        self._record_video_writer_thread: threading.Thread | None = None
+        self._record_video_stop_token = object()
         self.width = self.height = 0
 
         self.curr_state = 0
@@ -115,10 +120,11 @@ class BaseReal:
         self.tts.put_msg_txt(msg, datainfo or {})
 
     def put_audio_frame(self, audio_chunk, datainfo: dict | None = None):
+        event = normalize_eventpoint(datainfo or {})
         if self.tmp_audio is None:
             self.tmp_audio = audio_chunk
         else:
-            self.asr.put_audio_frame((self.tmp_audio, audio_chunk), datainfo or {})
+            self.asr.put_audio_frame((self.tmp_audio, audio_chunk), event)
             self.tmp_audio = None
 
     def put_audio_file(self, filebyte, datainfo: dict | None = None):
@@ -161,6 +167,11 @@ class BaseReal:
 
     def notify(self, eventpoint):
         logger.debug("notify:%s", eventpoint)
+
+    def _get_httpfile_profiler(self):
+        if self.config.transport.mode != "httpfile":
+            return None
+        return getattr(self, "_httpfile_profiler", None)
 
     def start_recording(self):
         if self.recording:
@@ -226,12 +237,84 @@ class BaseReal:
             self._record_audio_path,
         ]
         self._record_audio_pipe = subprocess.Popen(acommand, shell=False, stdin=subprocess.PIPE)
+        if httpfile_mode:
+            self._record_video_async_enabled = True
+            self._record_video_queue = queue.Queue(maxsize=8)
+            self._record_video_writer_thread = threading.Thread(
+                target=self._record_video_writer_loop,
+                name=f"record-video-writer-{self.sessionid}",
+                daemon=True,
+            )
+            self._record_video_writer_thread.start()
+        else:
+            self._record_video_async_enabled = False
+            self._record_video_queue = None
+            self._record_video_writer_thread = None
         self.recording = True
+
+    def _record_video_writer_loop(self):
+        while True:
+            if self._record_video_queue is None:
+                return
+            payload = self._record_video_queue.get()
+            try:
+                if payload is self._record_video_stop_token:
+                    return
+                if self._record_video_pipe and self._record_video_pipe.stdin:
+                    self._record_video_pipe.stdin.write(payload)
+            except Exception as exc:
+                logger.warning("record video writer thread error: %s", exc)
+                return
+            finally:
+                self._record_video_queue.task_done()
+
+    def _stop_record_video_writer(self):
+        if not self._record_video_async_enabled or self._record_video_queue is None:
+            return
+        put_deadline = time.perf_counter() + 5.0
+        while True:
+            try:
+                self._record_video_queue.put(self._record_video_stop_token, timeout=0.1)
+                break
+            except queue.Full:
+                if self._record_video_writer_thread is not None and not self._record_video_writer_thread.is_alive():
+                    logger.warning("record video writer thread already stopped before stop token enqueue")
+                    break
+                if time.perf_counter() > put_deadline:
+                    logger.warning("timeout when enqueuing stop token to record video writer thread")
+                    break
+                continue
+        if self._record_video_writer_thread is not None:
+            self._record_video_writer_thread.join(timeout=5.0)
+            if self._record_video_writer_thread.is_alive():
+                logger.warning("record video writer thread did not stop cleanly")
+        self._record_video_writer_thread = None
+        self._record_video_queue = None
+        self._record_video_async_enabled = False
 
     def record_video_data(self, image):
         if self.width == 0:
             self.height, self.width, _ = image.shape
-        if self.recording and self._record_video_pipe and self._record_video_pipe.stdin:
+        if not self.recording:
+            return
+        if self._record_video_async_enabled and self._record_video_queue is not None:
+            payload = image.tobytes()
+            put_deadline = time.perf_counter() + 5.0
+            while self.recording:
+                try:
+                    self._record_video_queue.put(payload, timeout=0.1)
+                    return
+                except queue.Full:
+                    if self._record_video_writer_thread is not None and not self._record_video_writer_thread.is_alive():
+                        logger.warning("record video writer thread is not alive while queue is full; fallback to direct write")
+                        break
+                    if time.perf_counter() > put_deadline:
+                        logger.warning("record video queue put timeout; fallback to direct write")
+                        break
+                    continue
+            if not self.recording:
+                return
+        if self._record_video_pipe and self._record_video_pipe.stdin:
             self._record_video_pipe.stdin.write(image.tobytes())
 
     def record_audio_data(self, frame):
@@ -242,6 +325,7 @@ class BaseReal:
         if not self.recording:
             return
         self.recording = False
+        self._stop_record_video_writer()
         self._record_video_pipe.stdin.close()
         self._record_video_pipe.wait()
         self._record_audio_pipe.stdin.close()
@@ -479,6 +563,7 @@ class BaseReal:
             _transition_start = time.time()
             httpfile_mode = self.config.transport.mode == "httpfile"
             direct_record_mode = httpfile_mode and loop is None and audio_track is None and video_track is None
+            profiler = self._get_httpfile_profiler()
             _transition_duration = 0.0 if httpfile_mode else 0.1
             _last_silent_frame = None
             _last_speaking_frame = None
@@ -489,13 +574,19 @@ class BaseReal:
             monitor_last_log_time = time.time()
             monitor_video_enqueued = 0
             monitor_audio_enqueued = 0
+            process_loop_start = time.perf_counter()
 
             while not quit_event.is_set():
+                loop_t0 = time.perf_counter()
+                wait_t0 = loop_t0
                 try:
                     res_frame, face_index, audio_frames = self.res_frame_queue.get(block=True, timeout=1)
                 except queue.Empty:
                     continue
+                if profiler is not None:
+                    profiler.observe("process.wait_res_frame", time.perf_counter() - wait_t0)
 
+                build_t0 = time.perf_counter()
                 idx, emo = self._resolve_face_index(face_index)
 
                 primary_event = audio_frames[0][2]
@@ -520,6 +611,8 @@ class BaseReal:
                     combine_frame = self._build_transition_frame(primary_event)
                     if combine_frame is None:
                         continue
+                    if profiler is not None:
+                        profiler.incr("process.frames.transition")
 
                 elif is_silence_audio:
                     self.speaking = False
@@ -535,6 +628,8 @@ class BaseReal:
                     )
                     if combine_frame is None:
                         continue
+                    if profiler is not None:
+                        profiler.incr("process.frames.silence")
                 else:
                     self.speaking = True
                     combine_frame, _last_speaking_frame = self._build_speaking_frame(
@@ -549,6 +644,8 @@ class BaseReal:
                     )
                     if combine_frame is None:
                         continue
+                    if profiler is not None:
+                        profiler.incr("process.frames.speaking")
 
                 if not httpfile_mode:
                     combine_frame = combine_frame.copy() if hasattr(combine_frame, "copy") else combine_frame
@@ -558,15 +655,31 @@ class BaseReal:
                 recordable_for_httpfile = not (
                     self.config.transport.mode == "httpfile" and is_silence_audio and status != "transition"
                 )
+                if profiler is not None:
+                    profiler.incr("process.frames.total")
 
                 if direct_record_mode:
                     if recordable_for_httpfile:
+                        record_video_t0 = time.perf_counter()
                         self.record_video_data(combine_frame)
+                        if profiler is not None:
+                            profiler.observe("process.record_video", time.perf_counter() - record_video_t0)
                         monitor_video_enqueued += 1
+                        if profiler is not None:
+                            profiler.incr("process.frames.recorded_video")
+                    elif profiler is not None:
+                        profiler.incr("process.frames.skipped_video")
+                    record_audio_t0 = time.perf_counter()
                     enqueued_audio_cnt = self._record_audio_batch_only(
                         audio_frames,
                         record_audio=recordable_for_httpfile,
                     )
+                    if profiler is not None:
+                        profiler.observe("process.record_audio", time.perf_counter() - record_audio_t0)
+                        if enqueued_audio_cnt > 0:
+                            profiler.incr("process.frames.recorded_audio", enqueued_audio_cnt)
+                        else:
+                            profiler.incr("process.frames.skipped_audio", len(audio_frames))
                     monitor_audio_enqueued += enqueued_audio_cnt
                 else:
                     video_seq, video_ok = self._enqueue_video(combine_frame, video_seq, video_track, quit_event, loop)
@@ -591,6 +704,10 @@ class BaseReal:
                         logger.warning("rtcpush audio frame enqueue aborted")
                         break
 
+                if profiler is not None:
+                    profiler.observe("process.build_frame", time.perf_counter() - build_t0)
+                    profiler.observe("process.loop_total", time.perf_counter() - loop_t0)
+
                 self._write_frame_monitor_line(
                     frame_log,
                     f"frame idx={idx} emo={emo} status={status} event={extra_text}",
@@ -612,6 +729,8 @@ class BaseReal:
                     monitor_last_log_time = time.time()
 
             frame_log.flush()
+            if profiler is not None:
+                profiler.observe("process.thread_lifetime", time.perf_counter() - process_loop_start)
 
         logger.info("basereal process_frames thread stop")
 

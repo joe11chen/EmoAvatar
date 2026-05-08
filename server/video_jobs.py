@@ -30,7 +30,9 @@ class VideoJob:
     updated_at: str
     file_path: str | None = None
     error: str | None = None
+    request_perf_ts: float = field(default_factory=time.perf_counter, repr=False)
     queued_perf_ts: float = field(default_factory=time.perf_counter, repr=False)
+    first_file_served_perf_ts: float | None = field(default=None, repr=False)
 
     def to_dict(self) -> dict[str, Any]:
         return asdict(self)
@@ -41,6 +43,8 @@ class VideoJobManager:
         self.context = context
         self.output_dir = Path(output_dir)
         self.output_dir.mkdir(parents=True, exist_ok=True)
+        self.httpfile_batch_cap = max(1, int(self.context.config.transport.httpfile_batch_cap))
+        logger.info("httpfile batch cap configured from yaml: %s", self.httpfile_batch_cap)
 
         self.jobs: dict[str, VideoJob] = {}
         self.queue: asyncio.Queue[str] = asyncio.Queue()
@@ -61,7 +65,7 @@ class VideoJobManager:
         self.worker_task = None
         logger.info("video jobs worker stopped")
 
-    async def submit(self, text: str, emotion_raw: Any) -> dict[str, Any]:
+    async def submit(self, text: str, emotion_raw: Any, request_perf_ts: float | None = None) -> dict[str, Any]:
         if not text or not str(text).strip():
             raise ValueError("text is required")
 
@@ -76,6 +80,8 @@ class VideoJobManager:
             emotion=emotion.name,
             created_at=now,
             updated_at=now,
+            request_perf_ts=request_perf_ts if request_perf_ts is not None else time.perf_counter(),
+            queued_perf_ts=time.perf_counter(),
         )
         self.jobs[job_id] = job
         await self.queue.put(job_id)
@@ -87,6 +93,15 @@ class VideoJobManager:
         if job is None:
             return None
         return job.to_dict()
+
+    def mark_file_served(self, job_id: str) -> float | None:
+        job = self.jobs.get(job_id)
+        if job is None:
+            return None
+        if job.first_file_served_perf_ts is not None:
+            return None
+        job.first_file_served_perf_ts = time.perf_counter()
+        return max(0.0, job.first_file_served_perf_ts - job.request_perf_ts)
 
     async def _worker_loop(self):
         while True:
@@ -159,6 +174,20 @@ class VideoJobManager:
 
     async def _drive_session_recording(self, job_id: str, session, text: str, emotion: EMOTION, output_path: Path):
         t_drive_start = time.perf_counter()
+        original_batch_size = getattr(session, "batch_size", None)
+        if self.context.config.transport.mode == "httpfile" and original_batch_size is not None:
+            effective_batch_size = min(int(original_batch_size), self.httpfile_batch_cap)
+            if effective_batch_size != original_batch_size:
+                session.batch_size = effective_batch_size
+                if getattr(session, "asr", None) is not None:
+                    session.asr.batch_size = effective_batch_size
+                logger.info(
+                    "httpfile runtime batch size adjusted: original=%s effective=%s cap=%s job_id=%s",
+                    original_batch_size,
+                    effective_batch_size,
+                    self.httpfile_batch_cap,
+                    job_id,
+                )
         render_quit_event = threading.Event()
         render_thread = threading.Thread(
             name=f"httpfile-render-{job_id[:8]}",
@@ -167,7 +196,6 @@ class VideoJobManager:
             daemon=True,
         )
         render_thread.start()
-        logger.info("[httpfile-prof] direct_render_started job_id=%s", job_id)
         produced = Path("data/record.mp4")
         if produced.exists():
             produced.unlink()
@@ -183,11 +211,7 @@ class VideoJobManager:
             t_record_start = time.perf_counter()
             record_started = True
             logger.info("video job record started: job_id=%s", job_id)
-            logger.info("[httpfile-prof] pre_record_setup_sec=%.3f job_id=%s", time.perf_counter() - t_drive_start, job_id)
-
-            t_dispatch_tts = time.perf_counter()
             session.put_msg_txt(text, {"emo": emotion, "llm_status": "end"})
-            logger.info("[httpfile-prof] dispatch_tts_sec=%.3f job_id=%s", time.perf_counter() - t_dispatch_tts, job_id)
 
             started_speaking = False
             last_speaking_ts = time.time()
@@ -255,20 +279,22 @@ class VideoJobManager:
                         time.perf_counter() - t_record_start,
                         job_id,
                     )
+                stop_record_sec = time.perf_counter() - t_stop_record_begin
                 logger.info(
                     "[httpfile-prof] stop_record_sec=%.3f job_id=%s",
-                    time.perf_counter() - t_stop_record_begin,
+                    stop_record_sec,
                     job_id,
                 )
 
             t_stop_render_begin = time.perf_counter()
             render_quit_event.set()
             render_thread.join(timeout=3.0)
+            direct_render_stop_sec = time.perf_counter() - t_stop_render_begin
             logger.info(
-                "[httpfile-prof] direct_render_stop_sec=%.3f alive=%s job_id=%s",
-                time.perf_counter() - t_stop_render_begin,
-                render_thread.is_alive(),
+                "video job render stopped: job_id=%s stop_sec=%.3f alive=%s",
                 job_id,
+                direct_render_stop_sec,
+                render_thread.is_alive(),
             )
 
         if not produced.exists() or produced.stat().st_size <= 0:
@@ -280,41 +306,28 @@ class VideoJobManager:
         t_move_begin = time.perf_counter()
         logger.info("video job moving output: job_id=%s from=%s to=%s", job_id, produced, output_path)
         shutil.move(str(produced), str(output_path))
+        move_output_sec = time.perf_counter() - t_move_begin
+        drive_total_sec = time.perf_counter() - t_drive_start
         logger.info("video job output ready: job_id=%s path=%s size=%d", job_id, output_path, output_path.stat().st_size)
         logger.info(
             "[httpfile-prof] move_output_sec=%.3f drive_total_sec=%.3f job_id=%s",
-            time.perf_counter() - t_move_begin,
-            time.perf_counter() - t_drive_start,
+            move_output_sec,
+            drive_total_sec,
             job_id,
         )
 
     def _run_job_sync(self, job_id: str, text: str, emotion_name: str) -> str:
-        t_sync_start = time.perf_counter()
         sessionid = generate_session_id(self.context, 6)
-        t_build_start = time.perf_counter()
         session = build_nerfreal(self.context, sessionid)
-        t_build_end = time.perf_counter()
         self.context.nerfreals[sessionid] = session
 
         output_path = self.output_dir / f"{job_id}.mp4"
         emotion = self._normalize_emotion(emotion_name)
 
         logger.info("video job session created: job_id=%s sessionid=%s", job_id, sessionid)
-        logger.info(
-            "[httpfile-prof] build_session_sec=%.3f job_id=%s sessionid=%s",
-            t_build_end - t_build_start,
-            job_id,
-            sessionid,
-        )
         try:
             asyncio.run(self._drive_session_recording(job_id, session, text, emotion, output_path))
             return str(output_path)
         finally:
             self.context.nerfreals.pop(sessionid, None)
             logger.info("video job session released: job_id=%s sessionid=%s", job_id, sessionid)
-            logger.info(
-                "[httpfile-prof] run_job_sync_total_sec=%.3f job_id=%s sessionid=%s",
-                time.perf_counter() - t_sync_start,
-                job_id,
-                sessionid,
-            )

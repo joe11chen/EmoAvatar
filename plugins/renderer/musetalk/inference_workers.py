@@ -23,25 +23,52 @@ def _pull_audio_frames(audio_out_queue, batch_size: int):
 
 
 @torch.no_grad()
-def inference(quit_event, batch_size, input_latent_list_cycle, audio_feat_queue, audio_out_queue, res_frame_queue, vae, unet, pe, timesteps):
+def inference(
+    quit_event,
+    batch_size,
+    input_latent_list_cycle,
+    audio_feat_queue,
+    audio_out_queue,
+    res_frame_queue,
+    vae,
+    unet,
+    pe,
+    timesteps,
+    profiler=None,
+):
     length = len(input_latent_list_cycle)
     index = 0
     count = 0
     counttime = 0
     logger.info("start inference")
     while not quit_event.is_set():
+        batch_t0 = time.perf_counter()
         try:
+            feat_wait_t0 = time.perf_counter()
             whisper_chunks = audio_feat_queue.get(block=True, timeout=1)
+            if profiler is not None:
+                profiler.observe("infer.wait_feat_queue", time.perf_counter() - feat_wait_t0)
         except queue.Empty:
             continue
+        audio_wait_t0 = time.perf_counter()
         is_all_silence, audio_frames = _pull_audio_frames(audio_out_queue, batch_size)
+        if profiler is not None:
+            profiler.observe("infer.wait_audio_out_queue", time.perf_counter() - audio_wait_t0)
+            profiler.incr("infer.batch_count")
+            profiler.incr("infer.audio_frames_in", batch_size * 2)
         if is_all_silence:
+            silence_put_t0 = time.perf_counter()
             for i in range(batch_size):
                 res_frame_queue.put((None, mirror_index(length, index), audio_frames[i * 2 : i * 2 + 2]))
                 index += 1
+            if profiler is not None:
+                profiler.observe("infer.enqueue_silence_res_frame", time.perf_counter() - silence_put_t0)
+                profiler.incr("infer.video_frames_out", batch_size)
+                profiler.observe("infer.batch_total", time.perf_counter() - batch_t0)
             continue
 
         t = time.perf_counter()
+        prep_t0 = t
         whisper_batch = np.stack(whisper_chunks)
         latent_batch = []
         for i in range(batch_size):
@@ -53,9 +80,17 @@ def inference(quit_event, batch_size, input_latent_list_cycle, audio_feat_queue,
         audio_feature_batch = audio_feature_batch.to(device=unet.device, dtype=unet.model.dtype)
         audio_feature_batch = pe(audio_feature_batch)
         latent_batch = latent_batch.to(dtype=unet.model.dtype)
+        if profiler is not None:
+            profiler.observe("infer.prepare_batch", time.perf_counter() - prep_t0)
 
+        unet_t0 = time.perf_counter()
         pred_latents = unet.model(latent_batch, timesteps, encoder_hidden_states=audio_feature_batch).sample
+        if profiler is not None:
+            profiler.observe("infer.unet_forward", time.perf_counter() - unet_t0)
+        vae_t0 = time.perf_counter()
         recon = vae.decode_latents(pred_latents)
+        if profiler is not None:
+            profiler.observe("infer.vae_decode", time.perf_counter() - vae_t0)
 
         counttime += time.perf_counter() - t
         count += batch_size
@@ -63,9 +98,14 @@ def inference(quit_event, batch_size, input_latent_list_cycle, audio_feat_queue,
             logger.info("------actual avg infer fps:%.4f", count / counttime)
             count = 0
             counttime = 0
+        put_t0 = time.perf_counter()
         for i, res_frame in enumerate(recon):
             res_frame_queue.put((res_frame, mirror_index(length, index), audio_frames[i * 2 : i * 2 + 2]))
             index += 1
+        if profiler is not None:
+            profiler.observe("infer.enqueue_res_frame", time.perf_counter() - put_t0)
+            profiler.incr("infer.video_frames_out", len(recon))
+            profiler.observe("infer.batch_total", time.perf_counter() - batch_t0)
     logger.info("musereal inference processor stop")
 
 
@@ -81,19 +121,30 @@ def multi_avatar_inference(
     unet,
     pe,
     timesteps,
+    profiler=None,
 ):
     count = 0
     counttime = 0
     last_emo = EMOTION.DEFAULT
     logger.info("start multi inference")
     while not quit_event.is_set():
+        batch_t0 = time.perf_counter()
         try:
+            feat_wait_t0 = time.perf_counter()
             whisper_chunks = audio_feat_queue.get(block=True, timeout=1)
+            if profiler is not None:
+                profiler.observe("infer.wait_feat_queue", time.perf_counter() - feat_wait_t0)
         except queue.Empty:
             continue
+        audio_wait_t0 = time.perf_counter()
         is_all_silence, audio_frames = _pull_audio_frames(audio_out_queue, batch_size)
+        if profiler is not None:
+            profiler.observe("infer.wait_audio_out_queue", time.perf_counter() - audio_wait_t0)
+            profiler.incr("infer.batch_count")
+            profiler.incr("infer.audio_frames_in", batch_size * 2)
 
         if is_all_silence:
+            silence_put_t0 = time.perf_counter()
             for i in range(batch_size):
                 pair_frames = audio_frames[i * 2 : i * 2 + 2]
                 event0 = pair_frames[0][2]
@@ -121,9 +172,14 @@ def multi_avatar_inference(
                     idx = mirror_index(avatars[emo].length, avatars[emo].index)
                     avatars[emo].index += 1
                 res_frame_queue.put((None, (idx, emo), pair_frames))
+            if profiler is not None:
+                profiler.observe("infer.enqueue_silence_res_frame", time.perf_counter() - silence_put_t0)
+                profiler.incr("infer.video_frames_out", batch_size)
+                profiler.observe("infer.batch_total", time.perf_counter() - batch_t0)
             continue
 
         t = time.perf_counter()
+        prep_t0 = t
         whisper_batch = np.stack(whisper_chunks)
         latent_batch = []
         face_indexes = []
@@ -161,9 +217,17 @@ def multi_avatar_inference(
         audio_feature_batch = audio_feature_batch.to(device=unet.device, dtype=unet.model.dtype)
         audio_feature_batch = pe(audio_feature_batch)
         latent_batch = latent_batch.to(dtype=unet.model.dtype)
+        if profiler is not None:
+            profiler.observe("infer.prepare_batch", time.perf_counter() - prep_t0)
 
+        unet_t0 = time.perf_counter()
         pred_latents = unet.model(latent_batch, timesteps, encoder_hidden_states=audio_feature_batch).sample
+        if profiler is not None:
+            profiler.observe("infer.unet_forward", time.perf_counter() - unet_t0)
+        vae_t0 = time.perf_counter()
         recon = vae.decode_latents(pred_latents)
+        if profiler is not None:
+            profiler.observe("infer.vae_decode", time.perf_counter() - vae_t0)
 
         counttime += time.perf_counter() - t
         count += batch_size
@@ -171,6 +235,11 @@ def multi_avatar_inference(
             logger.info("------actual avg infer fps:%.4f", count / counttime)
             count = 0
             counttime = 0
+        put_t0 = time.perf_counter()
         for i, res_frame in enumerate(recon):
             res_frame_queue.put((res_frame, face_indexes[i], audio_frames[i * 2 : i * 2 + 2]))
+        if profiler is not None:
+            profiler.observe("infer.enqueue_res_frame", time.perf_counter() - put_t0)
+            profiler.incr("infer.video_frames_out", len(recon))
+            profiler.observe("infer.batch_total", time.perf_counter() - batch_t0)
     logger.info("musereal inference processor stop")

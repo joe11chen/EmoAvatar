@@ -78,9 +78,16 @@ WebRTC 示例配置：`config/webrtc.yaml`
 python app.py --config config/webrtc.yaml
 ```
 
+HTTP 文件模式示例配置：`config/httpfile.yaml`
+
+```bash
+python app.py --config config/httpfile.yaml
+```
+
 访问：
 - `http://<server-ip>:6006/webrtcapi.html`
 - 推荐前端：`http://<server-ip>:6006/dashboard.html`
+- HTTP 文件模式前端：`http://<server-ip>:6006/httpfile.html`
 
 ---
 
@@ -129,6 +136,10 @@ server:
   listenport: 6006
 ```
 
+HTTP 文件模式可用配置项（YAML）：
+
+- `transport.httpfile_batch_cap`：运行时 batch 上限（默认 `8`，用于限制 `transport.mode=httpfile` 下的端到端时延）
+
 ---
 
 ## 6. HTTP 接口（常用）
@@ -143,25 +154,68 @@ server:
 - `POST /record`：开始/结束录制
 - `POST /is_speaking`：查询当前是否在说话
 
+仅 `transport.mode=httpfile` 可用：
+
+- `POST /video_jobs`：提交文本任务
+- `GET /video_jobs/{job_id}`：查询任务状态
+- `GET /video_jobs/{job_id}/file`：获取生成 MP4（支持 `?download=1`）
+
+返回约定：
+
+- 成功：`{"code":0,"msg":"ok","data":...}`
+- 失败：`{"code":-1,"msg":"..."}`
+
 ---
 
-## 7. 二次开发指南（新同事最常用）
+## 7. HTTPFile 性能统计
 
-### 7.1 新增 TTS
+日志关键指标（`[httpfile-prof]`）：
+
+- `queue_wait_sec`
+- `time_to_first_speaking_sec`
+- `completion_summary`
+- `record_active_sec`
+- `stop_record_sec`
+- `move_output_sec` / `drive_total_sec`
+- `job_total_sec`
+- `tts_total_sec`
+- `request_to_file_sec`
+
+统计脚本：
+
+```bash
+python scripts/httpfile_log_stats.py livetalking.log
+```
+
+常用参数：
+
+```bash
+# 按服务端任务耗时排序慢任务
+python scripts/httpfile_log_stats.py livetalking.log --top-metric job_total_sec --top 20
+
+# 输出每个 job 的明细
+python scripts/httpfile_log_stats.py livetalking.log --show-jobs
+```
+
+---
+
+## 8. 二次开发指南（新同事最常用）
+
+### 8.1 新增 TTS
 
 1. 在 `plugins/tts/` 新建模块  
 2. 继承 `core.runtime.tts.base.BaseTTS`  
 3. `@register(PluginType.TTS, "your_tts")`  
 4. 实现 `txt_to_audio`
 
-### 7.2 新增 ASR
+### 8.2 新增 ASR
 
 1. 在 `plugins/asr/` 新建模块  
 2. 继承 `core.runtime.asr.base.BaseASR`  
 3. `@register(PluginType.ASR, "your_asr")`  
 4. 实现 `run_step`
 
-### 7.3 新增 Renderer（新 talk 模型）
+### 8.3 新增 Renderer（新 talk 模型）
 
 1. 在 `plugins/renderer/<name>/runtime.py` 实现类  
 2. 继承 `core.runtime.renderer.base.BaseReal` 并注册  
@@ -174,7 +228,7 @@ server:
 
 ---
 
-## 8. 常见排障
+## 9. 常见排障
 
 - 启动即失败：先看 `validate_startup_plugins` 报错（插件名错误最常见）
 - 首帧慢：确认模型与素材目录完整，首次 warmup 正常
@@ -183,7 +237,7 @@ server:
 
 ---
 
-## 9. 维护约定
+## 10. 维护约定
 
 - 统一链路：只沿 `tts/asr/renderer` 扩展，不新增兼容分叉
 - 变更后必须执行：

@@ -31,6 +31,7 @@ transport:
   push_url: ""
   rtc_audio_queue_maxsize: 600
   rtc_video_queue_maxsize: 300
+  httpfile_batch_cap: 8
 
 server:
   max_session: 1
