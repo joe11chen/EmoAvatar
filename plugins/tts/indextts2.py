@@ -49,6 +49,7 @@ class IndexTTS2(BaseTTS):
             raise
 
     def txt_to_audio(self, msg: tuple[str, dict]):
+        tts_start = time.perf_counter()
         text, textevent = msg
         emotion = _normalize_emotion(textevent.get("emo"))
         segments = self.split_text(text)
@@ -77,19 +78,38 @@ class IndexTTS2(BaseTTS):
             )
             self.prev_emo = emotion
 
+        # In httpfile batch mode, explicitly close expression back to DEFAULT.
+        if (
+            self.state == State.RUNNING
+            and self.config.transport.mode == "httpfile"
+            and self.prev_emo != EMOTION.DEFAULT
+        ):
+            self._emit_transition_silence(self.prev_emo, EMOTION.DEFAULT, textevent, text)
+            self.prev_emo = EMOTION.DEFAULT
+
+        if self.config.transport.mode == "httpfile":
+            logger.info(
+                "[httpfile-prof] tts_total_sec=%.3f segments=%d text_len=%d",
+                time.perf_counter() - tts_start,
+                len(segments),
+                len(text),
+            )
+            self.parent.asr.put_eos()
+
     def _emit_transition_silence(
         self,
         prev_emo: EMOTION,
         next_emo: EMOTION,
         textevent: dict,
         text: str,
-    ) -> None:
+    ) -> int:
         transitions = getattr(self.parent, "transitions", None)
         if not transitions:
-            return
+            return 0
         frames = transitions.get(prev_emo, {}).get(next_emo, [])
         if not frames:
-            return
+            return 0
+        emitted = 0
         for frame_idx in range(len(frames) * 2):
             eventpoint = {
                 "status": "transition",
@@ -100,6 +120,8 @@ class IndexTTS2(BaseTTS):
             }
             eventpoint.update(textevent)
             self.parent.put_audio_frame(np.zeros(self.chunk, np.float32), eventpoint)
+            emitted += 1
+        return emitted
 
     def split_text(self, text: str) -> list[str]:
         try:
@@ -152,7 +174,7 @@ class IndexTTS2(BaseTTS):
         msg: tuple[str, dict],
         is_first: bool = False,
         is_last: bool = False,
-    ) -> None:
+    ) -> int:
         text, textevent = msg
         try:
             stream, sample_rate = sf.read(audio_file)
@@ -162,6 +184,19 @@ class IndexTTS2(BaseTTS):
                 stream = stream[:, 0]
             if sample_rate != self.sample_rate and stream.shape[0] > 0:
                 stream = resampy.resample(x=stream, sr_orig=sample_rate, sr_new=self.sample_rate)
+
+            if self.config.transport.mode == "httpfile" and stream.shape[0] > 0:
+                # Batch mode: trim long trailing silence from TTS output to reduce unnecessary render tail.
+                # Keep a small tail for natural endpoint and A/V continuity.
+                silence_th = 0.003
+                keep_tail_samples = int(0.12 * self.sample_rate)
+                nz = np.where(np.abs(stream) > silence_th)[0]
+                if nz.size > 0:
+                    end_idx = min(stream.shape[0], int(nz[-1]) + 1 + keep_tail_samples)
+                    stream = stream[:end_idx]
+                else:
+                    # All-silence edge case: keep a tiny packet instead of dropping to empty.
+                    stream = stream[: max(self.chunk, keep_tail_samples)]
 
             streamlen = stream.shape[0]
             idx = 0
@@ -189,5 +224,8 @@ class IndexTTS2(BaseTTS):
                 tail_event = {"status": tail_status, "text": text}
                 tail_event.update(textevent)
                 self.parent.put_audio_frame(np.zeros(self.chunk, np.float32), tail_event)
+                audio_frame_cnt += 1
+            return audio_frame_cnt
         except Exception:
             logger.exception("IndexTTS2 file_to_stream failed")
+            return 0

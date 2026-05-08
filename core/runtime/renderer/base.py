@@ -169,6 +169,7 @@ class BaseReal:
         os.makedirs("data", exist_ok=True)
         self._record_video_path = f"temp{self.config.sessionid}.mp4"
         self._record_audio_path = f"temp{self.config.sessionid}.aac"
+        httpfile_mode = self.config.transport.mode == "httpfile"
 
         command = [
             "ffmpeg",
@@ -189,9 +190,24 @@ class BaseReal:
             "-pix_fmt",
             "yuv420p",
             "-vcodec",
-            "h264",
-            self._record_video_path,
+            "libx264",
         ]
+        if httpfile_mode:
+            command.extend(
+                [
+                    "-preset",
+                    "ultrafast",
+                    "-tune",
+                    "zerolatency",
+                    "-threads",
+                    "4",
+                ]
+            )
+        command.extend(
+            [
+            self._record_video_path,
+            ]
+        )
         self._record_video_pipe = subprocess.Popen(command, shell=False, stdin=subprocess.PIPE)
         acommand = [
             "ffmpeg",
@@ -277,7 +293,7 @@ class BaseReal:
             return next_video_seq, True
         return video_seq, False
 
-    def _enqueue_audio_batch(self, audio_frames, audio_seq, audio_track, quit_event, loop) -> tuple[int, int, bool]:
+    def _enqueue_audio_batch(self, audio_frames, audio_seq, audio_track, quit_event, loop, record_audio: bool = True) -> tuple[int, int, bool]:
         enqueued_count = 0
         for audio_frame in audio_frames:
             frame, _audio_type, eventpoint = audio_frame
@@ -295,8 +311,20 @@ class BaseReal:
                 enqueued_count += 1
             else:
                 return audio_seq, enqueued_count, False
-            self.record_audio_data(frame)
+            if record_audio:
+                self.record_audio_data(frame)
         return audio_seq, enqueued_count, True
+
+    def _record_audio_batch_only(self, audio_frames, record_audio: bool = True) -> int:
+        if not record_audio:
+            return 0
+        written_count = 0
+        for audio_frame in audio_frames:
+            frame, _audio_type, _eventpoint = audio_frame
+            frame = (frame * 32767).astype(np.int16)
+            self.record_audio_data(frame)
+            written_count += 1
+        return written_count
 
     def _build_frame_monitor_path(self) -> str:
         monitor_dir = self.config.renderer.frame_monitor_dir
@@ -391,6 +419,7 @@ class BaseReal:
         transition_duration,
         last_silent_frame,
         last_speaking_frame,
+        copy_output=True,
     ):
         audiotype = audio_frames[0][1]
         target_frame = self._pick_silence_target_frame(idx, emo, audiotype)
@@ -413,7 +442,7 @@ class BaseReal:
             transition_start,
             transition_duration,
         )
-        return combine_frame, combine_frame.copy()
+        return combine_frame, (combine_frame.copy() if copy_output else combine_frame)
 
     def _build_speaking_frame(
         self,
@@ -424,6 +453,7 @@ class BaseReal:
         transition_duration,
         last_silent_frame,
         last_speaking_frame,
+        copy_output=True,
     ):
         try:
             current_frame = self.paste_back_frame(res_frame, idx, emo)
@@ -440,14 +470,16 @@ class BaseReal:
             transition_start,
             transition_duration,
         )
-        return combine_frame, combine_frame.copy()
+        return combine_frame, (combine_frame.copy() if copy_output else combine_frame)
 
     def process_frames(self, quit_event, loop=None, audio_track=None, video_track=None):
         monitor_path = self._build_frame_monitor_path()
         with open(monitor_path, "w+") as frame_log:
             _last_speaking = False
             _transition_start = time.time()
-            _transition_duration = 0.1
+            httpfile_mode = self.config.transport.mode == "httpfile"
+            direct_record_mode = httpfile_mode and loop is None and audio_track is None and video_track is None
+            _transition_duration = 0.0 if httpfile_mode else 0.1
             _last_silent_frame = None
             _last_speaking_frame = None
 
@@ -474,6 +506,7 @@ class BaseReal:
                 prev_status = status
                 is_silence_audio = self._is_silence_audio(audio_frames)
                 current_speaking = not is_silence_audio
+                self.speaking = current_speaking
                 if current_speaking != _last_speaking:
                     logger.info(
                         "状态切换：%s → %s",
@@ -498,6 +531,7 @@ class BaseReal:
                         _transition_duration,
                         _last_silent_frame,
                         _last_speaking_frame,
+                        copy_output=not httpfile_mode,
                     )
                     if combine_frame is None:
                         continue
@@ -511,38 +545,56 @@ class BaseReal:
                         _transition_duration,
                         _last_silent_frame,
                         _last_speaking_frame,
+                        copy_output=not httpfile_mode,
                     )
                     if combine_frame is None:
                         continue
 
-                combine_frame = combine_frame.copy() if hasattr(combine_frame, "copy") else combine_frame
+                if not httpfile_mode:
+                    combine_frame = combine_frame.copy() if hasattr(combine_frame, "copy") else combine_frame
                 extra_text = str(primary_event)
-                cv2.putText(combine_frame, "LiveTalking", (10, 20), cv2.FONT_HERSHEY_SIMPLEX, 0.3, (128, 128, 128), 1)
+                if not httpfile_mode:
+                    cv2.putText(combine_frame, "LiveTalking", (10, 20), cv2.FONT_HERSHEY_SIMPLEX, 0.3, (128, 128, 128), 1)
+                recordable_for_httpfile = not (
+                    self.config.transport.mode == "httpfile" and is_silence_audio and status != "transition"
+                )
 
-                video_seq, video_ok = self._enqueue_video(combine_frame, video_seq, video_track, quit_event, loop)
-                if video_ok:
-                    monitor_video_enqueued += 1
+                if direct_record_mode:
+                    if recordable_for_httpfile:
+                        self.record_video_data(combine_frame)
+                        monitor_video_enqueued += 1
+                    enqueued_audio_cnt = self._record_audio_batch_only(
+                        audio_frames,
+                        record_audio=recordable_for_httpfile,
+                    )
+                    monitor_audio_enqueued += enqueued_audio_cnt
                 else:
-                    logger.warning("rtcpush video frame enqueue aborted")
-                    break
+                    video_seq, video_ok = self._enqueue_video(combine_frame, video_seq, video_track, quit_event, loop)
+                    if video_ok:
+                        monitor_video_enqueued += 1
+                    else:
+                        logger.warning("rtcpush video frame enqueue aborted")
+                        break
 
-                self.record_video_data(combine_frame)
+                    if recordable_for_httpfile:
+                        self.record_video_data(combine_frame)
+                    audio_seq, enqueued_audio_cnt, audio_ok = self._enqueue_audio_batch(
+                        audio_frames,
+                        audio_seq,
+                        audio_track,
+                        quit_event,
+                        loop,
+                        record_audio=recordable_for_httpfile,
+                    )
+                    monitor_audio_enqueued += enqueued_audio_cnt
+                    if not audio_ok:
+                        logger.warning("rtcpush audio frame enqueue aborted")
+                        break
+
                 self._write_frame_monitor_line(
                     frame_log,
                     f"frame idx={idx} emo={emo} status={status} event={extra_text}",
                 )
-
-                audio_seq, enqueued_audio_cnt, audio_ok = self._enqueue_audio_batch(
-                    audio_frames,
-                    audio_seq,
-                    audio_track,
-                    quit_event,
-                    loop,
-                )
-                monitor_audio_enqueued += enqueued_audio_cnt
-                if not audio_ok:
-                    logger.warning("rtcpush audio frame enqueue aborted")
-                    break
 
                 if (time.time() - monitor_last_log_time) >= 1.0:
                     stats = self._collect_producer_stats(
@@ -566,12 +618,18 @@ class BaseReal:
     def _enqueue_webrtc_frame(self, track, frame, eventpoint, kind, quit_event, loop) -> bool:
         if track is None or loop is None:
             return False
+        if getattr(track, "readyState", "live") != "live":
+            logger.info("skip enqueue[%s]: track is not live", kind)
+            return False
         future = asyncio.run_coroutine_threadsafe(track._queue.put((frame, eventpoint)), loop)
         while not quit_event.is_set():
             try:
                 future.result(timeout=1.0)
                 return True
             except concurrent.futures.TimeoutError:
+                if getattr(track, "readyState", "live") != "live":
+                    logger.info("stop enqueue[%s]: track closed while waiting", kind)
+                    return False
                 logger.warning("rtcpush enqueue pending[%s]: qsize=%d", kind, track._queue.qsize())
                 continue
             except Exception as exc:

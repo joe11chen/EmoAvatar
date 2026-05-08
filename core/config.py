@@ -178,7 +178,7 @@ def load_app_config(config_path: str) -> AppConfig:
     )
     transport = TransportConfig(
         mode=_as_str(_get_required(transport_data, "mode", "transport.mode"), "transport.mode"),
-        push_url=_as_str(_get_required(transport_data, "push_url", "transport.push_url"), "transport.push_url"),
+        push_url=_as_str(transport_data.get("push_url", ""), "transport.push_url"),
         rtc_audio_queue_maxsize=_as_int(
             _get_required(transport_data, "rtc_audio_queue_maxsize", "transport.rtc_audio_queue_maxsize"),
             "transport.rtc_audio_queue_maxsize",
@@ -188,8 +188,8 @@ def load_app_config(config_path: str) -> AppConfig:
             "transport.rtc_video_queue_maxsize",
         ),
     )
-    if transport.mode not in {"webrtc", "rtcpush"}:
-        raise ValueError("transport.mode must be one of: webrtc, rtcpush")
+    if transport.mode not in {"webrtc", "rtcpush", "httpfile"}:
+        raise ValueError("transport.mode must be one of: webrtc, rtcpush, httpfile")
 
     server = ServerConfig(
         max_session=_as_int(_get_required(server_data, "max_session", "server.max_session"), "server.max_session"),

@@ -32,6 +32,7 @@ from logger import logger
 from server.http_routes import build_on_shutdown_handler, register_http_routes
 from server.rtc_runtime import run_push_session
 from server.runtime_context import RuntimeContext
+from server.video_jobs import VideoJobManager
 
 
 DEFAULT_CONFIG_PATH = Path("config/app.yaml")
@@ -58,6 +59,16 @@ def build_runtime_context(config: AppConfig) -> RuntimeContext:
 
 def create_web_app(context: RuntimeContext):
     appasync = web.Application(client_max_size=1024**2 * 100)
+
+    if context.config.transport.mode == "httpfile":
+        context.video_jobs = VideoJobManager(context)
+
+        async def _start_video_jobs(_app):
+            if context.video_jobs:
+                await context.video_jobs.start()
+
+        appasync.on_startup.append(_start_video_jobs)
+
     appasync.on_shutdown.append(build_on_shutdown_handler(context))
     register_http_routes(appasync, context)
 
@@ -105,6 +116,8 @@ if __name__ == "__main__":
         pagename = "rtcpushapi.html"
     elif config.transport.mode == "webrtc":
         pagename = "webrtcapi.html"
+    elif config.transport.mode == "httpfile":
+        pagename = "httpfile.html"
     else:
         pagename = "dashboard.html"
     logger.info("start http server; http://<serverip>:%s/%s", config.server.listenport, pagename)

@@ -28,10 +28,12 @@ if TYPE_CHECKING:
     from core.runtime.renderer.base import BaseReal
 
 class BaseASR:
+    EOS = object()
 
     def __init__(self, config, parent:BaseReal = None):
         self.config = config
         self.parent = parent
+        self.mode = config.transport.mode
 
         self.fps = config.runtime.fps # 20 ms per frame
         self.sample_rate = 16000
@@ -62,8 +64,24 @@ class BaseASR:
         eventpoint = normalize_eventpoint(datainfo or {})
         self.queue.put((audio_chunk, eventpoint))
 
+    def put_eos(self):
+        self.queue.put(self.EOS)
+
     #return frame:audio pcm; type: 0-normal speak, 1-silence; eventpoint:custom event sync with audio
-    def get_audio_frame(self):        
+    def get_audio_frame(self):
+        if self.mode == "httpfile":
+            item = self.queue.get(block=True)
+            if item is self.EOS:
+                return None, None, None
+
+            frame, eventpoint = item
+            if "llm_status" in eventpoint:
+                self.llm_status = eventpoint.get("llm_status")
+            if "emo" in eventpoint:
+                self.prev_emo = eventpoint.get("emo")
+            audio_type = 0
+            return frame, audio_type, eventpoint
+
         try:
             frame,eventpoint = self.queue.get(block=True,timeout=0.01)
             # eventpoint.update({"asr_status":"streaming"})
@@ -91,6 +109,9 @@ class BaseASR:
         return self.output_queue.get()
     
     def warm_up(self):
+        if self.mode == "httpfile":
+            return
+
         cnt = 0
         while cnt < self.stride_left_size + self.stride_right_size:
             audio_frame,audio_type,eventpoint=self.get_audio_frame()

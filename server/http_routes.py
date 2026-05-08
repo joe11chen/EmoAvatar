@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+from pathlib import Path
 from typing import TYPE_CHECKING
 
 from aiohttp import web
@@ -22,6 +23,13 @@ def register_http_routes(appasync: web.Application, context: RuntimeContext) -> 
         if session is None:
             raise ValueError(f"invalid sessionid: {sessionid}")
         return session
+
+    def _video_jobs_or_raise():
+        if context.config.transport.mode != "httpfile":
+            raise ValueError("video_jobs API is only available when transport.mode=httpfile")
+        if context.video_jobs is None:
+            raise RuntimeError("video jobs manager is not initialized")
+        return context.video_jobs
 
     def _ok_response(payload: dict | None = None) -> web.Response:
         body = {"code": 0, "msg": "ok"}
@@ -146,6 +154,46 @@ def register_http_routes(appasync: web.Application, context: RuntimeContext) -> 
         except Exception as exc:
             return _error_response(exc)
 
+    async def create_video_job(request):
+        try:
+            params = await request.json()
+            text = params.get("text", "")
+            emotion = params.get("emotion", "")
+            job = await _video_jobs_or_raise().submit(text, emotion)
+            return _ok_response({"data": {"job_id": job["job_id"], "status": job["status"]}})
+        except Exception as exc:
+            return _error_response(exc)
+
+    async def get_video_job(request):
+        try:
+            job_id = request.match_info.get("job_id", "")
+            job = _video_jobs_or_raise().get(job_id)
+            if job is None:
+                raise ValueError(f"invalid job_id: {job_id}")
+            return _ok_response({"data": job})
+        except Exception as exc:
+            return _error_response(exc)
+
+    async def get_video_job_file(request):
+        try:
+            job_id = request.match_info.get("job_id", "")
+            job = _video_jobs_or_raise().get(job_id)
+            if job is None:
+                raise ValueError(f"invalid job_id: {job_id}")
+            if job["status"] != "succeeded":
+                raise ValueError(f"job is not ready: status={job['status']}")
+            file_path = Path(str(job["file_path"]))
+            if not file_path.exists():
+                raise FileNotFoundError(f"job file not found: {file_path}")
+            if request.query.get("download") == "1":
+                return web.FileResponse(
+                    path=file_path,
+                    headers={"Content-Disposition": f'attachment; filename=\"{job_id}.mp4\"'},
+                )
+            return web.FileResponse(path=file_path)
+        except Exception as exc:
+            return _error_response(exc)
+
     appasync.router.add_post("/offer", offer)
     appasync.router.add_post("/human", human)
     appasync.router.add_post("/humanaudio", humanaudio)
@@ -153,11 +201,16 @@ def register_http_routes(appasync: web.Application, context: RuntimeContext) -> 
     appasync.router.add_post("/record", record)
     appasync.router.add_post("/interrupt_talk", interrupt_talk)
     appasync.router.add_post("/is_speaking", is_speaking)
+    appasync.router.add_post("/video_jobs", create_video_job)
+    appasync.router.add_get("/video_jobs/{job_id}", get_video_job)
+    appasync.router.add_get("/video_jobs/{job_id}/file", get_video_job_file)
     appasync.router.add_static("/", path="web")
 
 
 def build_on_shutdown_handler(context: RuntimeContext):
     async def on_shutdown(_app):
+        if context.video_jobs is not None:
+            await context.video_jobs.shutdown()
         await shutdown_peer_connections(context)
 
     return on_shutdown

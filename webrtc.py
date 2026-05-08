@@ -50,11 +50,12 @@ class PlayerStreamTrack(MediaStreamTrack):
     A video track that returns an animated flag.
     """
 
-    def __init__(self, player, kind, queue_maxsize=100):
+    def __init__(self, player, kind, queue_maxsize=100, realtime=True):
         super().__init__()  # don't forget this!
         self.kind = kind
         self._player = player
         self._queue = asyncio.Queue(maxsize=queue_maxsize)
+        self._realtime = realtime
         self.timelist = [] #记录最近包的时间戳
         self.current_frame_count = 0
         self._stats_window_start = time.time()
@@ -115,7 +116,7 @@ class PlayerStreamTrack(MediaStreamTrack):
                 self.current_frame_count += 1
                 wait = self._start + self.current_frame_count * VIDEO_PTIME - time.time()
                 # wait = self.timelist[0] + len(self.timelist)*VIDEO_PTIME - time.time()               
-                if wait>0:
+                if self._realtime and wait>0:
                     await asyncio.sleep(wait)
                 # if len(self.timelist)>=100:
                 #     self.timelist.pop(0)
@@ -133,7 +134,7 @@ class PlayerStreamTrack(MediaStreamTrack):
                 self.current_frame_count += 1
                 wait = self._start + self.current_frame_count * AUDIO_PTIME - time.time()
                 # wait = self.timelist[0] + len(self.timelist)*AUDIO_PTIME - time.time()
-                if wait>0:
+                if self._realtime and wait>0:
                     await asyncio.sleep(wait)
                 # if len(self.timelist)>=200:
                 #     self.timelist.pop(0)
@@ -243,12 +244,30 @@ class HumanPlayer:
 
         audio_queue_maxsize = 200
         video_queue_maxsize = 100
+        realtime_consume = True
         if hasattr(nerfreal, "config"):
             audio_queue_maxsize = nerfreal.config.transport.rtc_audio_queue_maxsize
             video_queue_maxsize = nerfreal.config.transport.rtc_video_queue_maxsize
+            realtime_consume = nerfreal.config.transport.mode != "httpfile"
+        mylogger.info(
+            "HumanPlayer consume mode: realtime=%s audio_q=%d video_q=%d",
+            realtime_consume,
+            audio_queue_maxsize,
+            video_queue_maxsize,
+        )
 
-        self.__audio = PlayerStreamTrack(self, kind="audio", queue_maxsize=audio_queue_maxsize)
-        self.__video = PlayerStreamTrack(self, kind="video", queue_maxsize=video_queue_maxsize)
+        self.__audio = PlayerStreamTrack(
+            self,
+            kind="audio",
+            queue_maxsize=audio_queue_maxsize,
+            realtime=realtime_consume,
+        )
+        self.__video = PlayerStreamTrack(
+            self,
+            kind="video",
+            queue_maxsize=video_queue_maxsize,
+            realtime=realtime_consume,
+        )
 
         self.__container = nerfreal
 
@@ -278,6 +297,7 @@ class HumanPlayer:
             self.__thread = threading.Thread(
                 name="media-player",
                 target=player_worker_thread,
+                daemon=True,
                 args=(
                     self.__thread_quit,
                     asyncio.get_event_loop(),
@@ -294,8 +314,12 @@ class HumanPlayer:
         if not self.__started and self.__thread is not None:
             self.__log_debug("Stopping worker thread")
             self.__thread_quit.set()
-            self.__thread.join()
-            self.__thread = None
+            join_timeout = 0.2 if not getattr(track, "_realtime", True) else 5.0
+            self.__thread.join(timeout=join_timeout)
+            if self.__thread.is_alive():
+                mylogger.warning("HumanPlayer worker thread join timeout, continue cleanup")
+            else:
+                self.__thread = None
 
         if not self.__started and self.__container is not None:
             #self.__container.close()

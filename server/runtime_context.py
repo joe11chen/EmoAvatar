@@ -17,3 +17,4 @@ class RuntimeContext:
     renderer_prepared: Any = None
     nerfreals: dict[int, BaseReal] = field(default_factory=dict)
     pcs: set["RTCPeerConnection"] = field(default_factory=set)
+    video_jobs: Any = None

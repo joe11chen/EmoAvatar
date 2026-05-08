@@ -1,0 +1,149 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>LiveTalking HTTP File MVP</title>
+  <style>
+    :root {
+      --bg: #f2f4f7;
+      --card: #ffffff;
+      --text: #1a1f36;
+      --muted: #5a647a;
+      --line: #d8deea;
+      --brand: #1266f1;
+    }
+    body { margin: 0; font-family: "PingFang SC", "Noto Sans SC", "Microsoft YaHei", sans-serif; background: var(--bg); color: var(--text); }
+    .wrap { max-width: 900px; margin: 20px auto; padding: 0 12px; }
+    .card { background: var(--card); border: 1px solid var(--line); border-radius: 10px; padding: 14px; margin-bottom: 12px; }
+    label { display: block; font-size: 13px; margin-bottom: 6px; color: var(--muted); }
+    textarea, select, button, input { width: 100%; box-sizing: border-box; border: 1px solid var(--line); border-radius: 8px; padding: 10px; font-size: 14px; }
+    textarea { min-height: 120px; resize: vertical; }
+    button { background: var(--brand); color: #fff; border: none; cursor: pointer; }
+    button:disabled { opacity: 0.5; cursor: not-allowed; }
+    .row { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; }
+    .mono { font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", "Courier New", monospace; white-space: pre-wrap; word-break: break-word; }
+    video { width: 100%; max-height: 520px; background: #000; border-radius: 8px; }
+  </style>
+</head>
+<body>
+  <div class="wrap">
+    <div class="card">
+      <h3>HTTP 文件传输模式（MVP）</h3>
+      <div class="row">
+        <div>
+          <label for="emotion">emotion</label>
+          <select id="emotion">
+            <option value="EMOTIONAL">EMOTIONAL</option>
+            <option value="DEFAULT">DEFAULT</option>
+            <option value="HAPPY">HAPPY</option>
+            <option value="CRY">CRY</option>
+            <option value="ANGRY">ANGRY</option>
+          </select>
+        </div>
+        <div>
+          <label for="job_id">job_id</label>
+          <input id="job_id" readonly />
+        </div>
+      </div>
+      <label for="text">text</label>
+      <textarea id="text" placeholder="输入要播报的文本"></textarea>
+      <div style="margin-top:10px;">
+        <button id="submit_btn" type="button">提交 /video_jobs</button>
+      </div>
+    </div>
+
+    <div class="card">
+      <h4>任务状态</h4>
+      <div id="status" class="mono">尚未提交任务</div>
+    </div>
+
+    <div class="card">
+      <h4>下载与预览</h4>
+      <div id="download"></div>
+      <video id="preview" controls></video>
+    </div>
+  </div>
+
+  <script>
+    const submitBtn = document.getElementById('submit_btn');
+    const textInput = document.getElementById('text');
+    const emotionInput = document.getElementById('emotion');
+    const jobIdInput = document.getElementById('job_id');
+    const statusEl = document.getElementById('status');
+    const downloadEl = document.getElementById('download');
+    const previewEl = document.getElementById('preview');
+
+    let pollTimer = null;
+
+    function setStatus(obj) {
+      statusEl.textContent = typeof obj === 'string' ? obj : JSON.stringify(obj, null, 2);
+    }
+
+    function clearPolling() {
+      if (pollTimer) {
+        clearInterval(pollTimer);
+        pollTimer = null;
+      }
+    }
+
+    async function queryJob(jobId) {
+      const resp = await fetch(`/video_jobs/${jobId}`);
+      const data = await resp.json();
+      if (data.code !== 0) {
+        setStatus(data);
+        return;
+      }
+
+      const job = data.data;
+      setStatus(job);
+      if (job.status === 'succeeded') {
+        clearPolling();
+        const previewUrl = `/video_jobs/${jobId}/file`;
+        const downloadUrl = `/video_jobs/${jobId}/file?download=1`;
+        downloadEl.innerHTML = `<a href="${downloadUrl}" target="_blank">下载 MP4</a>`;
+        previewEl.src = previewUrl;
+        previewEl.load();
+      } else if (job.status === 'failed') {
+        clearPolling();
+      }
+    }
+
+    submitBtn.addEventListener('click', async () => {
+      const text = textInput.value.trim();
+      if (!text) {
+        setStatus('text 不能为空');
+        return;
+      }
+
+      clearPolling();
+      downloadEl.innerHTML = '';
+      previewEl.removeAttribute('src');
+      previewEl.load();
+      submitBtn.disabled = true;
+
+      try {
+        const resp = await fetch('/video_jobs', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ text, emotion: emotionInput.value })
+        });
+        const result = await resp.json();
+        setStatus(result);
+        if (result.code !== 0) {
+          return;
+        }
+
+        const jobId = result.data.job_id;
+        jobIdInput.value = jobId;
+        await queryJob(jobId);
+        pollTimer = setInterval(() => queryJob(jobId), 2000);
+      } catch (err) {
+        setStatus(String(err));
+      } finally {
+        submitBtn.disabled = false;
+      }
+    });
+  </script>
+</body>
+</html>
