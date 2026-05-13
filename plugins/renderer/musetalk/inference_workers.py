@@ -6,7 +6,7 @@ import time
 import numpy as np
 import torch
 
-from data import EMOTION
+from data import EMOTION, DEFAULT_EMOTION
 from logger import logger
 from plugins.renderer.musetalk.assets import AvatarMeta, mirror_index
 
@@ -113,7 +113,7 @@ def inference(
 def multi_avatar_inference(
     quit_event,
     batch_size,
-    avatars: dict[str, AvatarMeta],
+    avatars: dict[EMOTION, AvatarMeta],
     audio_feat_queue,
     audio_out_queue,
     res_frame_queue,
@@ -125,7 +125,7 @@ def multi_avatar_inference(
 ):
     count = 0
     counttime = 0
-    last_emo = EMOTION.DEFAULT
+    last_emo = DEFAULT_EMOTION
     logger.info("start multi inference")
     while not quit_event.is_set():
         batch_t0 = time.perf_counter()
@@ -156,8 +156,8 @@ def multi_avatar_inference(
                     logger.error("-multi_avatar inference- Emotion conflict in silence frames, audio frame info : %s;%s", event0, event1)
                 emo = emo0 or emo1 or last_emo
                 if emo not in avatars:
-                    logger.warning("-multi_avatar inference- Unknown emotion %s in silence branch, fallback to DEFAULT", emo)
-                    emo = EMOTION.DEFAULT
+                    logger.warning("-multi_avatar inference- Unknown emotion %s in silence branch, fallback to baseline emotion", emo)
+                    emo = DEFAULT_EMOTION
                 last_emo = emo
 
                 status1 = event0.get("status")
@@ -194,8 +194,8 @@ def multi_avatar_inference(
 
             emo = emo0 or emo1 or last_emo
             if emo not in avatars:
-                logger.warning("-avatar inference- Unknown emotion %s, fallback to DEFAULT", emo)
-                emo = EMOTION.DEFAULT
+                logger.warning("-avatar inference- Unknown emotion %s, fallback to baseline emotion", emo)
+                emo = DEFAULT_EMOTION
             last_emo = emo
 
             status1 = event0.get("status")

@@ -21,7 +21,7 @@ renderer:
   frame_monitor_dir: tmp/frame_monitor
 
 tts:
-  ref_file: data/audios/voice_11.wav
+  ref_file: data/audios/reference.wav
   ref_text: null
   server: http://127.0.0.1:7860/
   max_tokens: 120

@@ -22,7 +22,7 @@ from core.contracts import normalize_eventpoint
 from core.plugin_system import PluginType, available_plugins, create, register_builtin_plugins
 from core.runtime.asr.base import BaseASR
 from core.runtime.tts.base import BaseTTS
-from data import EMOTION
+from data import EMOTION, DEFAULT_EMOTION
 from logger import logger
 
 
@@ -295,6 +295,30 @@ class BaseReal:
     def record_video_data(self, image):
         if self.width == 0:
             self.height, self.width, _ = image.shape
+        else:
+            h, w = image.shape[:2]
+            if h != self.height or w != self.width:
+                logger.warning(
+                    "record frame size mismatch: got=%dx%d expected=%dx%d, fitting with center-crop to fill frame",
+                    w,
+                    h,
+                    self.width,
+                    self.height,
+                )
+                target_w, target_h = self.width, self.height
+                scale = max(target_w / float(w), target_h / float(h))
+                fit_w = max(1, int(round(w * scale)))
+                fit_h = max(1, int(round(h * scale)))
+                resized = cv2.resize(image, (fit_w, fit_h))
+                crop_x = max(0, (fit_w - target_w) // 2)
+                crop_y = max(0, (fit_h - target_h) // 2)
+                image = resized[crop_y : crop_y + target_h, crop_x : crop_x + target_w]
+
+        if image.dtype != np.uint8:
+            image = image.astype(np.uint8)
+        if not image.flags["C_CONTIGUOUS"]:
+            image = np.ascontiguousarray(image)
+
         if not self.recording:
             return
         if self._record_video_async_enabled and self._record_video_queue is not None:
@@ -363,7 +387,7 @@ class BaseReal:
     def _resolve_face_index(self, face_index):
         if self.multi_avatar:
             return face_index[0], face_index[1]
-        return face_index, EMOTION.DEFAULT
+        return face_index, DEFAULT_EMOTION
 
     @staticmethod
     def _is_silence_audio(audio_frames) -> bool:
@@ -582,6 +606,8 @@ class BaseReal:
                 try:
                     res_frame, face_index, audio_frames = self.res_frame_queue.get(block=True, timeout=1)
                 except queue.Empty:
+                    if httpfile_mode:
+                        self.speaking = False
                     continue
                 if profiler is not None:
                     profiler.observe("process.wait_res_frame", time.perf_counter() - wait_t0)

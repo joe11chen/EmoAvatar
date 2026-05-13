@@ -21,7 +21,7 @@ import time
 from core.contracts import make_audio_out_frame
 from core.plugin_system import PluginType, register
 from core.runtime.asr.base import BaseASR
-from data import EMOTION
+from data import EMOTION, DEFAULT_EMOTION
 from musetalk.whisper.audio2feature import Audio2Feature
 
 @register(PluginType.ASR, "museasr")
@@ -64,7 +64,7 @@ class MuseASR(BaseASR):
 
         if self.mode == "httpfile" and eos_received and step_count < self.batch_size:
             pad_t0 = time.perf_counter()
-            pad_eventpoint = {"status": "end", "llm_status": "end", "emo": EMOTION.DEFAULT}
+            pad_eventpoint = {"status": "end", "llm_status": "end", "emo": DEFAULT_EMOTION}
             while step_count < self.batch_size:
                 silence_pair = (
                     np.zeros(self.chunk, dtype=np.float32),

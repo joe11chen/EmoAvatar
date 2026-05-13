@@ -11,18 +11,12 @@ import soundfile as sf
 
 from core.plugin_system import PluginType, register
 from core.runtime.tts.base import BaseTTS, State
-from data import EMOTION, EMOTION_VECTOR
+from data import EMOTION, DEFAULT_EMOTION, EMOTION_VECTOR, normalize_emotion
 from logger import logger
 
 
 def _normalize_emotion(value) -> EMOTION:
-    if isinstance(value, EMOTION):
-        return value
-    if isinstance(value, str):
-        for emotion in EMOTION:
-            if value in {emotion.name, emotion.value}:
-                return emotion
-    return EMOTION.DEFAULT
+    return normalize_emotion(value, strict=False)
 
 
 @register(PluginType.TTS, "indextts2")
@@ -31,7 +25,7 @@ class IndexTTS2(BaseTTS):
         super().__init__(config, parent)
         self.server_url = config.tts.server
         self.max_tokens = config.tts.max_tokens
-        self.prev_emo = EMOTION.DEFAULT
+        self.prev_emo = DEFAULT_EMOTION
 
         default_ref = Path("data/audios/voice_11.wav")
         ref_file = Path(str(config.tts.ref_file))
@@ -63,7 +57,7 @@ class IndexTTS2(BaseTTS):
             if self.state != State.RUNNING:
                 break
 
-            emotion_vector = EMOTION_VECTOR.get(emotion, EMOTION_VECTOR[EMOTION.DEFAULT])
+            emotion_vector = EMOTION_VECTOR.get(emotion, EMOTION_VECTOR[DEFAULT_EMOTION])
             audio_file = self.indextts2_generate(segment_text, emotion_vector)
             if not audio_file:
                 logger.error("IndexTTS2 generation failed for segment %d", seg_idx + 1)
@@ -80,14 +74,14 @@ class IndexTTS2(BaseTTS):
             )
             self.prev_emo = emotion
 
-        # In httpfile batch mode, explicitly close expression back to DEFAULT.
+        # In httpfile batch mode, explicitly close expression back to baseline stage.
         if (
             self.state == State.RUNNING
             and self.config.transport.mode == "httpfile"
-            and self.prev_emo != EMOTION.DEFAULT
+            and self.prev_emo != DEFAULT_EMOTION
         ):
-            self._emit_transition_silence(self.prev_emo, EMOTION.DEFAULT, textevent, text)
-            self.prev_emo = EMOTION.DEFAULT
+            self._emit_transition_silence(self.prev_emo, DEFAULT_EMOTION, textevent, text)
+            self.prev_emo = DEFAULT_EMOTION
 
         tts_total_sec = time.perf_counter() - tts_start
         if self.config.transport.mode == "httpfile":
@@ -181,7 +175,7 @@ class IndexTTS2(BaseTTS):
 
         merged: list[np.ndarray] = []
         for seg_idx, segment_text in enumerate(segments):
-            emotion_vector = EMOTION_VECTOR.get(emo, EMOTION_VECTOR[EMOTION.DEFAULT])
+            emotion_vector = EMOTION_VECTOR.get(emo, EMOTION_VECTOR[DEFAULT_EMOTION])
             audio_file = self.indextts2_generate(segment_text, emotion_vector)
             if not audio_file:
                 logger.error("IndexTTS2 generation failed for segment %d", seg_idx + 1)

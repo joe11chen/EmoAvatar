@@ -11,7 +11,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
-from data import EMOTION
+from data import EMOTION, DEFAULT_EMOTION, normalize_emotion
 from logger import logger
 from server.rtc_runtime import build_nerfreal, generate_session_id
 
@@ -140,18 +140,7 @@ class VideoJobManager:
 
     @staticmethod
     def _normalize_emotion(value: Any) -> EMOTION:
-        if isinstance(value, EMOTION):
-            return value
-        text = str(value or "").strip()
-        if not text:
-            return EMOTION.DEFAULT
-
-        upper = text.upper()
-        for emotion in EMOTION:
-            if upper == emotion.name or text == emotion.value:
-                return emotion
-
-        raise ValueError(f"unsupported emotion: {value}")
+        return normalize_emotion(value, strict=True)
 
     def _prepare_record_resolution(self, session) -> None:
         if getattr(session, "width", 0) > 0 and getattr(session, "height", 0) > 0:
@@ -160,7 +149,7 @@ class VideoJobManager:
         frame = None
         if getattr(session, "multi_avatar", False):
             avatars = getattr(session, "avatars", {})
-            avatar = avatars.get(EMOTION.DEFAULT)
+            avatar = avatars.get(DEFAULT_EMOTION)
             if avatar is not None and getattr(avatar, "frame_list_cycle", None):
                 frame = avatar.frame_list_cycle[0]
         elif getattr(session, "frame_list_cycle", None):

@@ -9,7 +9,7 @@
 
 ## 1. 前置条件
  
-1. Base URL 示例：`http://<server-ip>:6006`。  
+1. Base URL 示例：`https://u888898-vsmb-4c86be6d.westb.seetacloud.com:8443`。  
 2. 请求头：`Content-Type: application/json`（POST 接口）。  
 
 ---
@@ -32,11 +32,12 @@
 
 推荐传枚举名（不区分大小写）：
 
-- `DEFAULT`
-- `CRY`
-- `ANGRY`
-- `HAPPY`
-- `EMOTIONAL`
+- `DEFAULT`（默认中性态）
+- `EMOTIONAL_FLOODING`（情绪淹没态）
+- `RIGID_DEFENSE`（固着抗辩态）
+- `WAVERING_DOUBT`（动摇疑惑态）
+- `OPEN_ACCEPTANCE`（开放接纳态）
+- `RELIEF_GROWTH`（释然成长态）
 
 不传或空字符串时默认 `DEFAULT`。
 
@@ -53,14 +54,14 @@
 ```json
 {
   "text": "你好，这是一个视频任务。",
-  "emotion": "DEFAULT"
+  "emotion": "EMOTIONAL_FLOODING"
 }
 ```
 
 字段说明：
 
 - `text`：`string`，必填，待播报文本
-- `emotion`：`string`，可选，情绪类型
+- `emotion`：`string`，可选，情绪阶段
 
 成功响应示例：
 
@@ -89,7 +90,7 @@
     "job_id": "b6c0c2e0f3d6424ea6a0f86e8e7d2d41",
     "status": "running",
     "text": "你好，这是一个视频任务。",
-    "emotion": "DEFAULT",
+    "emotion": "EMOTIONAL_FLOODING",
     "created_at": "2026-05-08T20:00:00+00:00",
     "updated_at": "2026-05-08T20:00:03+00:00",
     "file_path": null,
@@ -119,14 +120,14 @@
 ```json
 {
   "text": "你好，这是一个纯音频任务。",
-  "emotion": "HAPPY"
+  "emotion": "OPEN_ACCEPTANCE"
 }
 ```
 
 字段说明：
 
 - `text`：`string`，必填，待合成文本
-- `emotion`：`string`，可选，情绪类型
+- `emotion`：`string`，可选，情绪阶段
 
 成功响应示例：
 
@@ -155,7 +156,7 @@
     "job_id": "8dc9efc8ebfe4a1da06e32887e2b6e4d",
     "status": "succeeded",
     "text": "你好，这是一个纯音频任务。",
-    "emotion": "HAPPY",
+    "emotion": "OPEN_ACCEPTANCE",
     "created_at": "2026-05-08T20:05:00+00:00",
     "updated_at": "2026-05-08T20:05:02+00:00",
     "file_path": "tmp/audio_jobs/8dc9efc8ebfe4a1da06e32887e2b6e4d.wav",
@@ -197,7 +198,7 @@
 ```bash
 curl -s http://127.0.0.1:6006/video_jobs \
   -H 'Content-Type: application/json' \
-  -d '{"text":"你好，这是视频任务。","emotion":"DEFAULT"}'
+  -d '{"text":"你好，这是视频任务。","emotion":"EMOTIONAL_FLOODING"}'
 ```
 
 ### 6.2 查询视频任务
@@ -217,7 +218,7 @@ curl -L -o out.mp4 "http://127.0.0.1:6006/video_jobs/<job_id>/file?download=1"
 ```bash
 curl -s http://127.0.0.1:6006/audio_jobs \
   -H 'Content-Type: application/json' \
-  -d '{"text":"你好，这是纯音频任务。","emotion":"HAPPY"}'
+  -d '{"text":"你好，这是纯音频任务。","emotion":"OPEN_ACCEPTANCE"}'
 ```
 
 ### 6.5 查询纯音频任务
@@ -250,4 +251,3 @@ curl -L -o out.wav "http://127.0.0.1:6006/audio_jobs/<job_id>/file?download=1"
 
 - `{"code":-1,"msg":"video_jobs API is only available when transport.mode=httpfile"}`
   当前服务不是 `httpfile` 模式。
-

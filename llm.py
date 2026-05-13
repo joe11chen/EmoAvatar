@@ -1,7 +1,7 @@
 import copy
 import time
 from core.runtime.renderer.base import BaseReal
-from data import EMOTION
+from data import EMOTION, next_emotion
 from logger import logger
 
 SYSTEM_PROMPT = '''
@@ -42,7 +42,7 @@ def llm_response(message,nerfreal:BaseReal):
     result=""
     prev_sentence=""
     first = True
-    emo = {"emo": EMOTION.EMOTIONAL}
+    emo = {"emo": EMOTION.EMOTIONAL_FLOODING}
     first_sentence = True
     
     for chunk in completion:
@@ -68,7 +68,7 @@ def llm_response(message,nerfreal:BaseReal):
                                 data_info.update({"llm_status": "streaming"})
                             logger.info("llm result: {}, datainfo: {}".format(prev_sentence, data_info))
                             nerfreal.put_msg_txt(prev_sentence, data_info)
-                            emo["emo"] = EMOTION.EMOTIONAL if EMOTION.DEFAULT == emo["emo"] else EMOTION.DEFAULT
+                            emo["emo"] = next_emotion(emo["emo"])
                         # 更新为当前句
                         prev_sentence = result
                         result=""

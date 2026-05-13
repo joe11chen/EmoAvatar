@@ -10,7 +10,7 @@ import torch.multiprocessing as mp
 
 from core.plugin_system import PluginType, create, register, register_builtin_asr_plugins
 from core.runtime.renderer.base import BaseReal
-from data import EMOTION
+from data import EMOTION, DEFAULT_EMOTION
 from logger import logger
 from musetalk.myutil import get_image_blending
 from musetalk.utils.utils import load_all_model
@@ -58,7 +58,7 @@ class MuseTalkModelResource:
     """
 
     def __init__(self, config):
-        avatar_ids = [EMOTION.DEFAULT, EMOTION.EMOTIONAL]
+        avatar_ids = list(EMOTION)
         self.model = load_model()
 
         self.transitions = None
@@ -139,7 +139,7 @@ class MuseReal(BaseReal):
                 self.input_latent_list_cycle,
             ) = self.resource.avatar
 
-    def paste_back_frame(self, pred_frame, idx: int, emo: str = EMOTION.DEFAULT):
+    def paste_back_frame(self, pred_frame, idx: int, emo: EMOTION = DEFAULT_EMOTION):
         if self.multi_avatar:
             avatar = self.avatars[emo]
             bbox = avatar.coord_list_cycle[idx]

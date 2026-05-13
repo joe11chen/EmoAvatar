@@ -22,7 +22,7 @@ from queue import Queue
 import torch.multiprocessing as mp
 from typing import TYPE_CHECKING
 
-from data import EMOTION
+from data import EMOTION, DEFAULT_EMOTION
 from core.contracts import make_audio_out_frame, make_idle_eventpoint, normalize_eventpoint
 if TYPE_CHECKING:
     from core.runtime.renderer.base import BaseReal
@@ -50,7 +50,7 @@ class BaseASR:
         self.feat_queue = mp.Queue(2)
 
         self.llm_status = "end"  # start, streaming, end
-        self.prev_emo = EMOTION.DEFAULT
+        self.prev_emo = DEFAULT_EMOTION
         #self.warm_up()
 
     def flush_talk(self):
@@ -98,7 +98,7 @@ class BaseASR:
                 frame = (np.zeros(self.chunk, dtype=np.float32), np.zeros(self.chunk, dtype=np.float32))
                 audio_type = 1
             
-            idle_emo = self.prev_emo if self.llm_status != "end" else EMOTION.DEFAULT
+            idle_emo = self.prev_emo if self.llm_status != "end" else DEFAULT_EMOTION
             eventpoint = make_idle_eventpoint(self.llm_status, idle_emo)
             # eventpoint.update({"asr_status":"idle"})
 

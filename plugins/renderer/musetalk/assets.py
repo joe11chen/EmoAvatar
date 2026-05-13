@@ -8,7 +8,7 @@ from dataclasses import dataclass
 import torch
 
 from core.runtime.renderer import read_imgs
-from data import EMOTION
+from data import EMOTION, emotion_avatar_id, emotion_transition_profile
 from logger import logger
 
 
@@ -54,39 +54,54 @@ def load_avatar(avatar_id):
 
 
 def load_multi_avatar(avatar_ids: list[EMOTION]):
-    avatars = {}
-    for avatar_id in avatar_ids:
-        frame_list_cycle, mask_list_cycle, coord_list_cycle, mask_coords_list_cycle, input_latent_list_cycle = load_avatar(
-            avatar_id.value
-        )
-        avatars[avatar_id] = AvatarMeta(
-            frame_list_cycle=frame_list_cycle,
-            mask_list_cycle=mask_list_cycle,
-            coord_list_cycle=coord_list_cycle,
-            mask_coords_list_cycle=mask_coords_list_cycle,
-            input_latent_list_cycle=input_latent_list_cycle,
-            length=len(input_latent_list_cycle),
-        )
+    avatars: dict[EMOTION, AvatarMeta] = {}
+    cache_by_avatar_id: dict[str, AvatarMeta] = {}
+    for emotion in avatar_ids:
+        avatar_id = emotion_avatar_id(emotion)
+        cached = cache_by_avatar_id.get(avatar_id)
+        if cached is None:
+            frame_list_cycle, mask_list_cycle, coord_list_cycle, mask_coords_list_cycle, input_latent_list_cycle = load_avatar(
+                avatar_id
+            )
+            cached = AvatarMeta(
+                frame_list_cycle=frame_list_cycle,
+                mask_list_cycle=mask_list_cycle,
+                coord_list_cycle=coord_list_cycle,
+                mask_coords_list_cycle=mask_coords_list_cycle,
+                input_latent_list_cycle=input_latent_list_cycle,
+                length=len(input_latent_list_cycle),
+            )
+            cache_by_avatar_id[avatar_id] = cached
+        avatars[emotion] = cached
     return avatars
+
+
+def _read_transition_frames(transition_dir: str) -> list:
+    image_list = glob.glob(os.path.join(transition_dir, "*.[jpJP][pnPN]*[gG]"))
+    image_list = sorted(image_list, key=lambda x: int(os.path.splitext(os.path.basename(x))[0].split("_")[-1]))
+    return read_imgs(image_list)
 
 
 def load_transitions(avatar_ids: list[EMOTION]):
     transition_path = "./data/transitions"
-    transitions = {}
+    transitions: dict[EMOTION, dict[EMOTION, list]] = {}
     for emo1 in avatar_ids:
         transitions[emo1] = {}
         for emo2 in avatar_ids:
             if emo1 == emo2:
                 continue
-            transition_dir = os.path.join(transition_path, f"{emo1.name}2{emo2.name}")
+            from_key = emotion_transition_profile(emo1)
+            to_key = emotion_transition_profile(emo2)
+            transition_dir = os.path.join(transition_path, f"{from_key}2{to_key}")
             if os.path.exists(transition_dir):
-                logger.info("Loading transition frames for %s to %s", emo1, emo2)
-                image_list = glob.glob(os.path.join(transition_dir, "*.[jpJP][pnPN]*[gG]"))
-                image_list = sorted(
-                    image_list, key=lambda x: int(os.path.splitext(os.path.basename(x))[0].split("_")[-1])
-                )
-                transitions[emo1][emo2] = read_imgs(image_list)
+                logger.info("Loading transition frames for %s to %s from %s", emo1.name, emo2.name, transition_dir)
+                transitions[emo1][emo2] = _read_transition_frames(transition_dir)
             else:
-                logger.warning("No transition frames found for %s to %s. Expected folder: %s", emo1, emo2, transition_dir)
+                logger.warning(
+                    "No transition frames found for %s to %s. Expected folder: %s",
+                    emo1.name,
+                    emo2.name,
+                    transition_dir,
+                )
                 transitions[emo1][emo2] = []
     return transitions

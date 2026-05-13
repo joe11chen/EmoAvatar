@@ -10,7 +10,7 @@ from pathlib import Path
 from typing import Any
 
 from core.plugin_system import PluginType, create
-from data import EMOTION
+from data import EMOTION, normalize_emotion
 from logger import logger
 
 
@@ -132,16 +132,7 @@ class AudioJobManager:
 
     @staticmethod
     def _normalize_emotion(value: Any) -> EMOTION:
-        if isinstance(value, EMOTION):
-            return value
-        text = str(value or "").strip()
-        if not text:
-            return EMOTION.DEFAULT
-        upper = text.upper()
-        for emotion in EMOTION:
-            if upper == emotion.name or text == emotion.value:
-                return emotion
-        raise ValueError(f"unsupported emotion: {value}")
+        return normalize_emotion(value, strict=True)
 
     def _run_job_sync(self, job_id: str, text: str, emotion_name: str) -> str:
         output_path = self.output_dir / f"{job_id}.wav"

@@ -36,7 +36,7 @@ from queue import Queue
 from threading import Thread, Event
 import torch.multiprocessing as mp
 
-from data import EMOTION
+from data import EMOTION, DEFAULT_EMOTION
 from musetalk.utils.utils import get_file_type,get_video_fps,datagen
 #from musetalk.utils.preprocessing import get_landmark_and_bbox,read_imgs,coord_placeholder
 from musetalk.myutil import get_image_blending
@@ -304,7 +304,7 @@ def inference(quit_event,batch_size,input_latent_list_cycle,audio_feat_queue,aud
 def multi_avatar_inference(quit_event,batch_size,avatars: dict[str, AvatarMeta],audio_feat_queue,audio_out_queue,res_frame_queue,vae,unet,pe,timesteps,profiler=None): #vae, unet, pe,timesteps
     count=0
     counttime=0
-    last_emo = EMOTION.DEFAULT
+    last_emo = DEFAULT_EMOTION
     logger.info('start multi inference')
     while not quit_event.is_set():
         starttime=time.perf_counter()
@@ -339,7 +339,7 @@ def multi_avatar_inference(quit_event,batch_size,avatars: dict[str, AvatarMeta],
 
                 emo = emo0 or emo1 or last_emo
                 if emo not in avatars:
-                    emo = EMOTION.DEFAULT
+                    emo = DEFAULT_EMOTION
 
                 idx = __mirror_index(avatars[emo].length, avatars[emo].index)
                 res_frame_queue.put((None, (idx, emo), pair_frames))
@@ -366,8 +366,8 @@ def multi_avatar_inference(quit_event,batch_size,avatars: dict[str, AvatarMeta],
 
                 emo = emo0 or emo1 or last_emo
                 if emo not in avatars:
-                    logger.warning("-avatar inference- Unknown emotion {}, fallback to DEFAULT".format(emo))
-                    emo = EMOTION.DEFAULT
+                    logger.warning("-avatar inference- Unknown emotion {}, fallback to baseline emotion".format(emo))
+                    emo = DEFAULT_EMOTION
 
                 last_emo = emo
                 idx = __mirror_index(avatars[emo].length,avatars[emo].index)
@@ -495,7 +495,7 @@ class MuseReal(BaseReal):
         recon = self.vae.decode_latents(pred_latents)
       
 
-    def paste_back_frame(self,pred_frame,idx:int,emo: str=EMOTION.DEFAULT):
+    def paste_back_frame(self,pred_frame,idx:int,emo: str=DEFAULT_EMOTION):
         if self.multi_avatar:
             avatar = self.avatars[emo]
             bbox = avatar.coord_list_cycle[idx]
