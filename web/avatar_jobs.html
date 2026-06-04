@@ -1,0 +1,460 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>素材批量生成</title>
+  <style>
+    :root {
+      --bg: #f6f2ea;
+      --card: #fff9f2;
+      --text: #2b2b2b;
+      --muted: #6b6661;
+      --line: #e3d8cc;
+      --accent: #d46b08;
+      --accent-2: #8c4b00;
+    }
+    * { box-sizing: border-box; }
+    body {
+      margin: 0;
+      font-family: "Space Grotesk", "Noto Sans SC", "Microsoft YaHei", sans-serif;
+      background: radial-gradient(circle at 10% 0%, #ffe7cf 0%, var(--bg) 55%);
+      color: var(--text);
+      min-height: 100vh;
+    }
+    .wrap {
+      max-width: 980px;
+      margin: 28px auto 40px;
+      padding: 0 16px;
+    }
+    .header {
+      display: flex;
+      flex-direction: column;
+      gap: 6px;
+      margin-bottom: 18px;
+    }
+    .title {
+      font-size: 28px;
+      margin: 0;
+      letter-spacing: 0.2px;
+    }
+    .subtitle {
+      margin: 0;
+      color: var(--muted);
+      font-size: 14px;
+    }
+    .card {
+      background: var(--card);
+      border: 1px solid var(--line);
+      border-radius: 16px;
+      padding: 18px;
+      box-shadow: 0 18px 40px rgba(69, 38, 12, 0.1);
+      margin-bottom: 14px;
+      animation: rise 0.35s ease-out;
+    }
+    @keyframes rise {
+      from { transform: translateY(6px); opacity: 0.7; }
+      to { transform: translateY(0); opacity: 1; }
+    }
+    label {
+      display: block;
+      font-size: 12px;
+      letter-spacing: 0.2px;
+      text-transform: uppercase;
+      color: var(--muted);
+      margin-bottom: 6px;
+    }
+    input, textarea, button {
+      width: 100%;
+      border: 1px solid var(--line);
+      border-radius: 10px;
+      padding: 10px 12px;
+      font-size: 14px;
+      font-family: inherit;
+    }
+    textarea {
+      resize: vertical;
+      min-height: 90px;
+    }
+    button {
+      background: linear-gradient(135deg, var(--accent), var(--accent-2));
+      color: #fff;
+      border: none;
+      cursor: pointer;
+      font-weight: 600;
+      letter-spacing: 0.3px;
+      transition: transform 0.12s ease, box-shadow 0.12s ease;
+    }
+    button:hover { transform: translateY(-1px); box-shadow: 0 8px 18px rgba(212, 107, 8, 0.28); }
+    button:disabled { opacity: 0.55; cursor: not-allowed; box-shadow: none; }
+    .grid {
+      display: grid;
+      gap: 12px;
+      grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
+    }
+    .emotion-list {
+      display: grid;
+      grid-template-columns: repeat(auto-fit, minmax(160px, 1fr));
+      gap: 8px;
+    }
+    .emotion-item {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      padding: 8px 10px;
+      border: 1px solid var(--line);
+      border-radius: 12px;
+      background: #fffefc;
+      font-size: 13px;
+      color: var(--muted);
+    }
+    .emotion-item input { width: auto; }
+    .emotion-item.disabled { opacity: 0.5; }
+    .mono {
+      font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", "Courier New", monospace;
+      white-space: pre-wrap;
+      word-break: break-word;
+      font-size: 12px;
+    }
+    .result-item {
+      display: flex;
+      justify-content: space-between;
+      gap: 12px;
+      align-items: flex-start;
+      padding: 10px 0;
+      border-bottom: 1px dashed var(--line);
+    }
+    .result-item:last-child { border-bottom: none; }
+    .result-main {
+      display: flex;
+      flex-direction: column;
+      gap: 4px;
+      min-width: 0;
+    }
+    .result-meta {
+      color: var(--muted);
+      font-size: 12px;
+      word-break: break-word;
+    }
+    .result-actions {
+      display: flex;
+      flex-direction: column;
+      gap: 4px;
+      align-items: flex-end;
+      font-size: 13px;
+      white-space: nowrap;
+    }
+    .badge {
+      display: inline-flex;
+      align-items: center;
+      gap: 6px;
+      padding: 4px 10px;
+      border-radius: 999px;
+      background: #ffe6cc;
+      color: #8c4b00;
+      font-size: 12px;
+      font-weight: 600;
+    }
+    .stage {
+      display: inline-flex;
+      width: fit-content;
+      align-items: center;
+      padding: 3px 8px;
+      border-radius: 999px;
+      background: #f2e6da;
+      color: #5c4a3a;
+      font-size: 12px;
+      font-weight: 600;
+    }
+    .stage.done {
+      background: #dff2df;
+      color: #236423;
+    }
+    .stage.failed {
+      background: #ffe0dc;
+      color: #9b2418;
+    }
+  </style>
+</head>
+<body>
+  <div class="wrap">
+    <div class="header">
+      <h1 class="title">素材批量生成</h1>
+      <p class="subtitle">上传图片，一次性生成多情绪口型素材。</p>
+    </div>
+
+    <div class="card">
+      <div class="grid">
+        <div>
+          <label for="avatar_id">user_id (可选)</label>
+          <input id="avatar_id" placeholder="例如: user_001" />
+        </div>
+        <div>
+          <label for="image">上传图片</label>
+          <input id="image" type="file" accept="image/*" />
+        </div>
+      </div>
+
+      <div style="margin-top:12px;">
+        <label>情绪选择</label>
+        <div id="emotion_list" class="emotion-list"></div>
+      </div>
+
+      <div style="margin-top:12px;">
+        <label for="positive_prompt">positive_prompt (可用 {emotion})</label>
+        <textarea id="positive_prompt" placeholder="可留空，使用默认模板"></textarea>
+      </div>
+
+      <div style="margin-top:12px;">
+        <label for="negative_prompt">negative_prompt</label>
+        <textarea id="negative_prompt" placeholder="可留空，使用默认模板"></textarea>
+      </div>
+
+      <div style="margin-top:12px;">
+        <button id="submit_btn" type="button">提交生成任务</button>
+      </div>
+    </div>
+
+    <div class="card">
+      <div class="grid">
+        <div>
+          <label>job_id</label>
+          <input id="job_id" readonly />
+        </div>
+        <div>
+          <label>状态</label>
+          <div id="status_badge" class="badge">尚未提交</div>
+        </div>
+      </div>
+      <div style="margin-top:12px;">
+        <label>详情</label>
+        <div id="status" class="mono">暂无任务。</div>
+      </div>
+    </div>
+
+    <div class="card">
+      <label>生成结果</label>
+      <div id="results"></div>
+    </div>
+  </div>
+
+  <script>
+    const emotionListEl = document.getElementById('emotion_list');
+    const submitBtn = document.getElementById('submit_btn');
+    const statusEl = document.getElementById('status');
+    const resultsEl = document.getElementById('results');
+    const jobIdEl = document.getElementById('job_id');
+    const badgeEl = document.getElementById('status_badge');
+    const imageEl = document.getElementById('image');
+    const avatarIdEl = document.getElementById('avatar_id');
+    const positivePromptEl = document.getElementById('positive_prompt');
+    const negativePromptEl = document.getElementById('negative_prompt');
+
+    let pollTimer = null;
+    let emotionOptions = [];
+
+    function setStatus(payload) {
+      statusEl.textContent = typeof payload === 'string' ? payload : JSON.stringify(payload, null, 2);
+    }
+
+    function setBadge(text) {
+      badgeEl.textContent = text;
+    }
+
+    function clearPolling() {
+      if (pollTimer) {
+        clearInterval(pollTimer);
+        pollTimer = null;
+      }
+    }
+
+    function toAssetUrl(path) {
+      if (!path) return '';
+      const idx = path.indexOf('/assets/');
+      if (idx >= 0) {
+        return path.slice(idx);
+      }
+      if (path.startsWith('assets/')) {
+        return '/' + path;
+      }
+      return path;
+    }
+
+    function escapeHtml(value) {
+      return String(value || '')
+        .replace(/&/g, '&amp;')
+        .replace(/</g, '&lt;')
+        .replace(/>/g, '&gt;')
+        .replace(/"/g, '&quot;')
+        .replace(/'/g, '&#39;');
+    }
+
+    function stageLabel(status) {
+      const labels = {
+        queued: '等待处理',
+        api_submitted: '已提交api任务',
+        video_done: '收到视频结果',
+        musetalk_submitted: '已提交MuseTalk任务',
+        musetalk_done: '已完成MuseTalk资源生成',
+        transition_api_submitted: '已提交transition api任务',
+        transition_video_done: '收到transition视频结果',
+        transition_frames_submitted: '已提交transition转帧任务',
+        transition_done: '已完成transition资源生成',
+        skipped: '已跳过',
+        failed: '失败'
+      };
+      return labels[status] || status || '未知';
+    }
+
+    function stageClass(status) {
+      if (status === 'musetalk_done' || status === 'transition_done') return 'done';
+      if (status === 'failed') return 'failed';
+      return '';
+    }
+
+    function renderResults(job) {
+      resultsEl.innerHTML = '';
+      const results = job.results || {};
+      const transitionResults = job.transition_results || {};
+      const errors = job.errors || {};
+      const emotionStatus = job.emotion_status || {};
+      const transitionStatus = job.transition_status || {};
+
+      const emotionKeys = Array.from(new Set([]
+        .concat(job.emotions || [])
+        .concat(Object.keys(emotionStatus))
+        .concat(Object.keys(results))
+        .concat(Object.keys(transitionStatus))
+        .concat(Object.keys(transitionResults))
+        .concat(Object.keys(errors))));
+      if (emotionKeys.length === 0) {
+        resultsEl.textContent = '暂无输出。';
+        return;
+      }
+
+      resultsEl.innerHTML = emotionKeys.map(key => {
+        const state = emotionStatus[key] || transitionStatus[key] || {};
+        const filePath = state.video_path || results[key] || transitionResults[key];
+        const err = errors[key];
+        const url = toAssetUrl(filePath);
+        const link = url ? `<a href="${escapeHtml(url)}" target="_blank">下载/预览</a>` : '';
+        const resourceDir = state.avatar_dir || state.frames_dir || '';
+        const message = err || state.message || '';
+        return `
+          <div class="result-item">
+            <div class="result-main">
+              <strong>${escapeHtml(key)}</strong>
+              <span class="stage ${stageClass(state.status)}">${escapeHtml(stageLabel(state.status))}</span>
+              ${filePath ? `<div class="result-meta">视频: ${escapeHtml(filePath)}</div>` : ''}
+              ${resourceDir ? `<div class="result-meta">资源: ${escapeHtml(resourceDir)}</div>` : ''}
+              ${message ? `<div class="result-meta">说明: ${escapeHtml(message)}</div>` : ''}
+            </div>
+            <div class="result-actions">${link}</div>
+          </div>
+        `;
+      }).join('');
+    }
+
+    function renderEmotions() {
+      emotionListEl.innerHTML = '';
+      if (!emotionOptions.length) {
+        emotionListEl.textContent = '未加载情绪列表';
+        return;
+      }
+      emotionListEl.innerHTML = emotionOptions.map(item => {
+        const disabled = !item.available ? 'disabled' : '';
+        const checked = item.available ? 'checked' : '';
+        return `
+          <label class="emotion-item ${disabled}">
+            <input type="checkbox" value="${item.name}" ${checked} ${disabled} />
+            <span>${item.name}</span>
+          </label>
+        `;
+      }).join('');
+    }
+
+    async function loadOptions() {
+      try {
+        const resp = await fetch('/avatar_jobs/options');
+        const data = await resp.json();
+        if (data.code !== 0) {
+          setStatus(data);
+          return;
+        }
+        const payload = data.data || {};
+        emotionOptions = payload.emotions || [];
+        positivePromptEl.placeholder = payload.positive_prompt_template || '';
+        negativePromptEl.placeholder = payload.negative_prompt || '';
+        renderEmotions();
+      } catch (err) {
+        setStatus(String(err));
+      }
+    }
+
+    async function queryJob(jobId) {
+      const resp = await fetch(`/avatar_jobs/${jobId}`);
+      const data = await resp.json();
+      if (data.code !== 0) {
+        setStatus(data);
+        return;
+      }
+      const job = data.data || {};
+      setStatus(job);
+      setBadge(job.status || 'unknown');
+      renderResults(job);
+      if (['succeeded', 'failed', 'partial'].includes(job.status)) {
+        clearPolling();
+      }
+    }
+
+    submitBtn.addEventListener('click', async () => {
+      const file = imageEl.files[0];
+      if (!file) {
+        setStatus('请先选择图片文件');
+        return;
+      }
+
+      const selected = Array.from(emotionListEl.querySelectorAll('input[type=checkbox]:checked'))
+        .map(el => el.value);
+
+      clearPolling();
+      resultsEl.innerHTML = '';
+      submitBtn.disabled = true;
+
+      const form = new FormData();
+      form.append('image', file);
+      if (avatarIdEl.value.trim()) {
+        form.append('avatar_id', avatarIdEl.value.trim());
+      }
+      if (selected.length) {
+        form.append('emotions', JSON.stringify(selected));
+      }
+      if (positivePromptEl.value.trim()) {
+        form.append('positive_prompt', positivePromptEl.value.trim());
+      }
+      if (negativePromptEl.value.trim()) {
+        form.append('negative_prompt', negativePromptEl.value.trim());
+      }
+
+      try {
+        const resp = await fetch('/avatar_jobs', { method: 'POST', body: form });
+        const result = await resp.json();
+        setStatus(result);
+        if (result.code !== 0) {
+          return;
+        }
+        jobIdEl.value = result.data.job_id;
+        setBadge(result.data.status || 'queued');
+        await queryJob(result.data.job_id);
+        pollTimer = setInterval(() => queryJob(result.data.job_id), 2000);
+      } catch (err) {
+        setStatus(String(err));
+      } finally {
+        submitBtn.disabled = false;
+      }
+    });
+
+    loadOptions();
+  </script>
+</body>
+</html>

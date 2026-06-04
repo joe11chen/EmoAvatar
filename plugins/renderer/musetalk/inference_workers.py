@@ -6,7 +6,7 @@ import time
 import numpy as np
 import torch
 
-from data import EMOTION, DEFAULT_EMOTION
+from data import EMOTION, DEFAULT_EMOTION, normalize_emotion
 from logger import logger
 from plugins.renderer.musetalk.assets import AvatarMeta, mirror_index
 
@@ -20,6 +20,21 @@ def _pull_audio_frames(audio_out_queue, batch_size: int):
         if audio_type == 0:
             is_all_silence = False
     return is_all_silence, audio_frames
+
+
+def _resolve_emotion(value, avatars: dict[EMOTION, AvatarMeta], fallback: EMOTION) -> EMOTION:
+    emo = normalize_emotion(value, strict=False)
+    if emo in avatars:
+        return emo
+    if fallback in avatars:
+        logger.warning("-multi_avatar inference- Unknown emotion %s, keep last available emotion %s", value, fallback)
+        return fallback
+    if DEFAULT_EMOTION in avatars:
+        logger.warning("-multi_avatar inference- Unknown emotion %s, fallback to baseline emotion", value)
+        return DEFAULT_EMOTION
+    first_available = next(iter(avatars), DEFAULT_EMOTION)
+    logger.warning("-multi_avatar inference- Unknown emotion %s, fallback to first available emotion %s", value, first_available)
+    return first_available
 
 
 @torch.no_grad()
@@ -154,10 +169,7 @@ def multi_avatar_inference(
                 emo1 = event1.get("emo")
                 if emo0 is not None and emo1 is not None and emo0 != emo1:
                     logger.error("-multi_avatar inference- Emotion conflict in silence frames, audio frame info : %s;%s", event0, event1)
-                emo = emo0 or emo1 or last_emo
-                if emo not in avatars:
-                    logger.warning("-multi_avatar inference- Unknown emotion %s in silence branch, fallback to baseline emotion", emo)
-                    emo = DEFAULT_EMOTION
+                emo = _resolve_emotion(emo0 or emo1 or last_emo, avatars, last_emo)
                 last_emo = emo
 
                 status1 = event0.get("status")
@@ -192,10 +204,7 @@ def multi_avatar_inference(
             if emo0 is not None and emo1 is not None and emo0 != emo1:
                 logger.warning("-avatar inference- Emotion conflict, audio frame info : %s;%s", event0, event1)
 
-            emo = emo0 or emo1 or last_emo
-            if emo not in avatars:
-                logger.warning("-avatar inference- Unknown emotion %s, fallback to baseline emotion", emo)
-                emo = DEFAULT_EMOTION
+            emo = _resolve_emotion(emo0 or emo1 or last_emo, avatars, last_emo)
             last_emo = emo
 
             status1 = event0.get("status")

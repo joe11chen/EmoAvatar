@@ -22,6 +22,7 @@ def register_http_routes(appasync: web.Application, context: RuntimeContext) -> 
     def _navigation_items(mode: str) -> list[dict[str, str]]:
         common = [
             {"label": "综合控制台", "path": "/dashboard.html", "desc": "统一控制面板"},
+            {"label": "素材批量生成", "path": "/avatar_jobs.html", "desc": "上传图片批量生成情绪素材"},
         ]
         if mode == "webrtc":
             return common + [
@@ -60,6 +61,18 @@ def register_http_routes(appasync: web.Application, context: RuntimeContext) -> 
             raise RuntimeError("audio jobs manager is not initialized")
         return context.audio_jobs
 
+    def _avatar_jobs_or_raise():
+        if context.avatar_jobs is None:
+            raise RuntimeError("avatar jobs manager is not initialized")
+        return context.avatar_jobs
+
+    def _renderer_resource_or_raise():
+        resource = context.renderer_prepared
+        reload_fn = getattr(resource, "reload_user_resource", None)
+        if reload_fn is None:
+            raise RuntimeError("renderer does not support user resource reload")
+        return resource
+
     def _ok_response(payload: dict | None = None) -> web.Response:
         body = {"code": 0, "msg": "ok"}
         if payload:
@@ -90,11 +103,12 @@ def register_http_routes(appasync: web.Application, context: RuntimeContext) -> 
     async def offer(request):
         params = await request.json()
         offer_obj = RTCSessionDescription(sdp=params["sdp"], type=params["type"])
+        user_id = str(params.get("user_id") or "").strip() or None
 
         sessionid = generate_session_id(context, 6)
-        nerfreal = await asyncio.get_running_loop().run_in_executor(None, build_nerfreal, context, sessionid)
+        nerfreal = await asyncio.get_running_loop().run_in_executor(None, build_nerfreal, context, sessionid, user_id)
         context.nerfreals[sessionid] = nerfreal
-        logger.info("sessionid=%d, session num=%d", sessionid, len(context.nerfreals))
+        logger.info("sessionid=%d user_id=%s, session num=%d", sessionid, getattr(nerfreal, "user_id", ""), len(context.nerfreals))
 
         ice_server = RTCIceServer(urls="stun:stun.miwifi.com:3478")
         pc = RTCPeerConnection(configuration=RTCConfiguration(iceServers=[ice_server]))
@@ -206,8 +220,9 @@ def register_http_routes(appasync: web.Application, context: RuntimeContext) -> 
             params = await request.json()
             text = params.get("text", "")
             emotion = params.get("emotion", "")
+            user_id = params.get("user_id", "")
             video_jobs = _video_jobs_or_raise()
-            job = await video_jobs.submit(text, emotion, request_perf_ts=request_perf_ts)
+            job = await video_jobs.submit(text, emotion, user_id_raw=user_id, request_perf_ts=request_perf_ts)
             return _ok_response({"data": {"job_id": job["job_id"], "status": job["status"]}})
         except Exception as exc:
             return _error_response(exc)
@@ -292,6 +307,83 @@ def register_http_routes(appasync: web.Application, context: RuntimeContext) -> 
         except Exception as exc:
             return _error_response(exc)
 
+    async def avatar_job_options(_request):
+        try:
+            options = _avatar_jobs_or_raise().get_options()
+            return _ok_response({"data": options})
+        except Exception as exc:
+            return _error_response(exc)
+
+    async def create_avatar_job(request):
+        try:
+            form = await request.post()
+            image = form.get("image")
+            if image is None:
+                raise ValueError("image is required")
+
+            avatar_id = form.get("avatar_id")
+            emotions = form.get("emotions")
+            positive_prompt = form.get("positive_prompt")
+            negative_prompt = form.get("negative_prompt")
+
+            image_bytes = image.file.read()
+            job = await _avatar_jobs_or_raise().submit(
+                image_bytes=image_bytes,
+                image_filename=image.filename,
+                avatar_id=avatar_id,
+                emotions_raw=emotions,
+                positive_prompt=positive_prompt,
+                negative_prompt=negative_prompt,
+            )
+            return _ok_response({"data": {"job_id": job["job_id"], "status": job["status"]}})
+        except Exception as exc:
+            return _error_response(exc)
+
+    async def get_avatar_job(request):
+        try:
+            job_id = request.match_info.get("job_id", "")
+            job = _avatar_jobs_or_raise().get(job_id)
+            if job is None:
+                raise ValueError(f"invalid job_id: {job_id}")
+            return _ok_response({"data": job})
+        except Exception as exc:
+            return _error_response(exc)
+
+    async def reload_avatar_resource(request):
+        try:
+            user_id = request.query.get("user_id", "")
+            if request.can_read_body:
+                try:
+                    payload = await request.json()
+                    if isinstance(payload, dict):
+                        user_id = str(payload.get("user_id") or user_id)
+                except json.JSONDecodeError:
+                    form = await request.post()
+                    user_id = str(form.get("user_id") or user_id)
+            user_id = user_id.strip() or context.config.renderer.user_id
+            resource = _renderer_resource_or_raise()
+            loaded = resource.reload_user_resource(user_id)
+            refreshed_sessions = []
+            for sessionid, session in context.nerfreals.items():
+                reload_fn = getattr(session, "reload_user_resource", None)
+                if reload_fn is None:
+                    continue
+                session_user_id = getattr(session, "user_id", None)
+                if session_user_id == user_id:
+                    reload_fn(user_id)
+                    refreshed_sessions.append(sessionid)
+            return _ok_response(
+                {
+                    "data": {
+                        "user_id": loaded.user_id,
+                        "avatars": [emotion.value for emotion in loaded.avatars.keys()],
+                        "refreshed_sessions": refreshed_sessions,
+                    }
+                }
+            )
+        except Exception as exc:
+            return _error_response(exc)
+
     appasync.router.add_get("/", nav_home)
     appasync.router.add_get("/runtime_info", runtime_info)
     appasync.router.add_post("/offer", offer)
@@ -307,6 +399,11 @@ def register_http_routes(appasync: web.Application, context: RuntimeContext) -> 
     appasync.router.add_post("/audio_jobs", create_audio_job)
     appasync.router.add_get("/audio_jobs/{job_id}", get_audio_job)
     appasync.router.add_get("/audio_jobs/{job_id}/file", get_audio_job_file)
+    appasync.router.add_get("/avatar_jobs/options", avatar_job_options)
+    appasync.router.add_post("/avatar_jobs", create_avatar_job)
+    appasync.router.add_get("/avatar_jobs/{job_id}", get_avatar_job)
+    appasync.router.add_post("/avatar_resources/reload", reload_avatar_resource)
+    appasync.router.add_static("/assets", path="assets")
     appasync.router.add_static("/", path="web")
 
 
@@ -316,6 +413,8 @@ def build_on_shutdown_handler(context: RuntimeContext):
             await context.video_jobs.shutdown()
         if context.audio_jobs is not None:
             await context.audio_jobs.shutdown()
+        if context.avatar_jobs is not None:
+            await context.avatar_jobs.shutdown()
         await shutdown_peer_connections(context)
 
     return on_shutdown

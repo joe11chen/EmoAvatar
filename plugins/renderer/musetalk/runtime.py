@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import time
+from threading import RLock
 from threading import Event, Thread
 
 import cv2
@@ -15,7 +16,7 @@ from logger import logger
 from musetalk.myutil import get_image_blending
 from musetalk.utils.utils import load_all_model
 from musetalk.whisper.audio2feature import Audio2Feature
-from plugins.renderer.musetalk.assets import AvatarMeta, load_avatar, load_multi_avatar, load_transitions
+from plugins.renderer.musetalk.assets import AvatarMeta, MuseTalkUserResource, load_avatar, load_user_resource
 from plugins.renderer.musetalk.inference_workers import inference, multi_avatar_inference
 
 
@@ -59,16 +60,48 @@ class MuseTalkModelResource:
 
     def __init__(self, config):
         avatar_ids = list(EMOTION)
+        self.avatar_ids = avatar_ids
         self.model = load_model()
+        self._user_resources: dict[tuple[str, bool], MuseTalkUserResource] = {}
+        self._resource_lock = RLock()
+        self.enable_transition = bool(getattr(config.renderer, "enable_transition", True))
 
         self.transitions = None
         if config.renderer.multi_avatar:
-            self.transitions = load_transitions(avatar_ids)
-            self.avatar = load_multi_avatar(avatar_ids)
+            user_resource = self.get_user_resource(config.renderer.user_id, enable_transition=self.enable_transition)
+            self.transitions = user_resource.transitions
+            self.avatar = user_resource.avatars
         else:
-            self.avatar = load_avatar(config.renderer.avatar_id)
+            self.avatar = load_avatar(config.renderer.avatar_id, user_id=config.renderer.user_id)
 
         warm_up(config.renderer.batch_size, self.model)
+
+    def get_user_resource(
+        self,
+        user_id: str,
+        *,
+        reload: bool = False,
+        enable_transition: bool | None = None,
+    ) -> MuseTalkUserResource:
+        transition_enabled = self.enable_transition if enable_transition is None else bool(enable_transition)
+        cache_key = (user_id, transition_enabled)
+        with self._resource_lock:
+            if reload or cache_key not in self._user_resources:
+                logger.info(
+                    "Loading MuseTalk user resource: user_id=%s reload=%s enable_transition=%s",
+                    user_id,
+                    reload,
+                    transition_enabled,
+                )
+                self._user_resources[cache_key] = load_user_resource(
+                    user_id,
+                    self.avatar_ids,
+                    enable_transition=transition_enabled,
+                )
+            return self._user_resources[cache_key]
+
+    def reload_user_resource(self, user_id: str, *, enable_transition: bool | None = None) -> MuseTalkUserResource:
+        return self.get_user_resource(user_id, reload=True, enable_transition=enable_transition)
 
 
 @register(PluginType.RENDERER, "musetalk")
@@ -126,18 +159,36 @@ class MuseReal(BaseReal):
         self.asr.warm_up()
 
         self.multi_avatar = config.renderer.multi_avatar
-        self.transitions: dict[str, dict[str, any]] = self.resource.transitions
+        self.user_id = config.renderer.user_id
+        self.enable_transition = bool(getattr(config.renderer, "enable_transition", True))
 
         if self.multi_avatar:
-            self.avatars: dict[str, AvatarMeta] = self.resource.avatar
+            user_resource = self.resource.get_user_resource(
+                self.user_id,
+                enable_transition=self.enable_transition,
+            )
+            self.transitions: dict[str, dict[str, any]] = user_resource.transitions
+            self.avatars: dict[str, AvatarMeta] = user_resource.avatars
         else:
+            self.transitions: dict[str, dict[str, any]] = None
             (
                 self.frame_list_cycle,
                 self.mask_list_cycle,
                 self.coord_list_cycle,
                 self.mask_coords_list_cycle,
                 self.input_latent_list_cycle,
-            ) = self.resource.avatar
+            ) = load_avatar(config.renderer.avatar_id, user_id=self.user_id)
+
+    def reload_user_resource(self, user_id: str | None = None):
+        target_user = user_id or self.user_id
+        user_resource = self.resource.reload_user_resource(
+            target_user,
+            enable_transition=self.enable_transition,
+        )
+        if self.multi_avatar and target_user == self.user_id:
+            self.transitions = user_resource.transitions
+            self.avatars = user_resource.avatars
+        return user_resource
 
     def paste_back_frame(self, pred_frame, idx: int, emo: EMOTION = DEFAULT_EMOTION):
         if self.multi_avatar:

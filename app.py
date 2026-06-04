@@ -30,6 +30,7 @@ from core.config import AppConfig, load_app_config
 from core.plugin_system import PluginType, create, validate_startup_plugins
 from logger import logger
 from server.http_routes import build_on_shutdown_handler, register_http_routes
+from server.avatar_jobs import AvatarJobManager
 from server.rtc_runtime import run_push_session
 from server.runtime_context import RuntimeContext
 from server.audio_jobs import AudioJobManager
@@ -72,6 +73,15 @@ def create_web_app(context: RuntimeContext):
                 await context.audio_jobs.start()
 
         appasync.on_startup.append(_start_httpfile_jobs)
+
+    if context.config.avatar_jobs.enabled:
+        context.avatar_jobs = AvatarJobManager(context, assets_dir=context.config.avatar_jobs.assets_dir)
+
+        async def _start_avatar_jobs(_app):
+            if context.avatar_jobs:
+                await context.avatar_jobs.start()
+
+        appasync.on_startup.append(_start_avatar_jobs)
 
     appasync.on_shutdown.append(build_on_shutdown_handler(context))
     register_http_routes(appasync, context)

@@ -30,14 +30,17 @@ def generate_session_id(context: RuntimeContext, length: int = 6) -> int:
     raise RuntimeError("Unable to allocate unique session id")
 
 
-def _build_session_config(config: Any, sessionid: int) -> Any:
+def _build_session_config(config: Any, sessionid: int, user_id: str | None = None) -> Any:
     session_config = copy.copy(config)
+    session_config.renderer = copy.copy(config.renderer)
     session_config.sessionid = sessionid
+    if user_id:
+        session_config.renderer.user_id = user_id
     return session_config
 
 
-def build_nerfreal(context: RuntimeContext, sessionid: int) -> BaseReal:
-    session_config = _build_session_config(context.config, sessionid)
+def build_nerfreal(context: RuntimeContext, sessionid: int, user_id: str | None = None) -> BaseReal:
+    session_config = _build_session_config(context.config, sessionid, user_id=user_id)
     if context.renderer_cls is None:
         raise RuntimeError("renderer plugin is not initialized")
     return context.renderer_cls.create_session(session_config, context.renderer_prepared)

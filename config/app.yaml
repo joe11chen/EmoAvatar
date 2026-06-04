@@ -15,9 +15,11 @@ plugins:
 
 renderer:
   avatar_id: avator_1
+  user_id: default
   batch_size: 16
   customvideo_config: ""
   multi_avatar: false
+  enabletransition: true
   frame_monitor_dir: tmp/frame_monitor
 
 tts:

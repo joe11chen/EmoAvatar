@@ -26,6 +26,7 @@ class VideoJob:
     status: str
     text: str
     emotion: str
+    user_id: str
     created_at: str
     updated_at: str
     file_path: str | None = None
@@ -65,11 +66,18 @@ class VideoJobManager:
         self.worker_task = None
         logger.info("video jobs worker stopped")
 
-    async def submit(self, text: str, emotion_raw: Any, request_perf_ts: float | None = None) -> dict[str, Any]:
+    async def submit(
+        self,
+        text: str,
+        emotion_raw: Any,
+        user_id_raw: Any | None = None,
+        request_perf_ts: float | None = None,
+    ) -> dict[str, Any]:
         if not text or not str(text).strip():
             raise ValueError("text is required")
 
         emotion = self._normalize_emotion(emotion_raw)
+        user_id = self._normalize_user_id(user_id_raw)
         now = _now_iso()
         job_id = uuid.uuid4().hex
 
@@ -78,6 +86,7 @@ class VideoJobManager:
             status="queued",
             text=str(text),
             emotion=emotion.name,
+            user_id=user_id,
             created_at=now,
             updated_at=now,
             request_perf_ts=request_perf_ts if request_perf_ts is not None else time.perf_counter(),
@@ -85,7 +94,7 @@ class VideoJobManager:
         )
         self.jobs[job_id] = job
         await self.queue.put(job_id)
-        logger.info("video job queued: job_id=%s emotion=%s text_len=%d", job_id, job.emotion, len(job.text))
+        logger.info("video job queued: job_id=%s user_id=%s emotion=%s text_len=%d", job_id, job.user_id, job.emotion, len(job.text))
         return job.to_dict()
 
     def get(self, job_id: str) -> dict[str, Any] | None:
@@ -117,7 +126,7 @@ class VideoJobManager:
                 logger.info("video job running: job_id=%s", job_id)
                 logger.info("[httpfile-prof] queue_wait_sec=%.3f job_id=%s", queue_wait_sec, job_id)
                 job_run_start = time.perf_counter()
-                file_path = await asyncio.to_thread(self._run_job_sync, job.job_id, job.text, job.emotion)
+                file_path = await asyncio.to_thread(self._run_job_sync, job.job_id, job.text, job.emotion, job.user_id)
                 job.file_path = file_path
                 self._set_job_status(job, "succeeded")
                 logger.info("video job succeeded: job_id=%s file=%s", job_id, file_path)
@@ -141,6 +150,13 @@ class VideoJobManager:
     @staticmethod
     def _normalize_emotion(value: Any) -> EMOTION:
         return normalize_emotion(value, strict=True)
+
+    def _normalize_user_id(self, value: Any | None) -> str:
+        text = str(value or "").strip()
+        if not text:
+            text = getattr(self.context.config.renderer, "user_id", "default")
+        safe = "".join(ch for ch in text if ch.isalnum() or ch in {"-", "_", "."})
+        return safe or "default"
 
     def _prepare_record_resolution(self, session) -> None:
         if getattr(session, "width", 0) > 0 and getattr(session, "height", 0) > 0:
@@ -305,15 +321,15 @@ class VideoJobManager:
             job_id,
         )
 
-    def _run_job_sync(self, job_id: str, text: str, emotion_name: str) -> str:
+    def _run_job_sync(self, job_id: str, text: str, emotion_name: str, user_id: str) -> str:
         sessionid = generate_session_id(self.context, 6)
-        session = build_nerfreal(self.context, sessionid)
+        session = build_nerfreal(self.context, sessionid, user_id=user_id)
         self.context.nerfreals[sessionid] = session
 
         output_path = self.output_dir / f"{job_id}.mp4"
         emotion = self._normalize_emotion(emotion_name)
 
-        logger.info("video job session created: job_id=%s sessionid=%s", job_id, sessionid)
+        logger.info("video job session created: job_id=%s sessionid=%s user_id=%s", job_id, sessionid, user_id)
         try:
             asyncio.run(self._drive_session_recording(job_id, session, text, emotion, output_path))
             return str(output_path)

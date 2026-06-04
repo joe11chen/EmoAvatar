@@ -15,9 +15,11 @@ plugins:
 
 renderer:
   avatar_id: avator_1
+  user_id: default
   batch_size: 16
   customvideo_config: ""
   multi_avatar: true
+  enabletransition: false
   frame_monitor_dir: tmp/frame_monitor
 
 tts:
@@ -36,3 +38,12 @@ transport:
 server:
   max_session: 1
   listenport: 6006
+
+avatar_jobs:
+  enable_transition: false
+  emotion_prompts:
+    EMOTIONAL_FLOODING: ""
+    RIGID_DEFENSE: ""
+    WAVERING_DOUBT: ""
+    OPEN_ACCEPTANCE: ""
+    RELIEF_GROWTH: ""

@@ -19,3 +19,4 @@ class RuntimeContext:
     pcs: set["RTCPeerConnection"] = field(default_factory=set)
     video_jobs: Any = None
     audio_jobs: Any = None
+    avatar_jobs: Any = None

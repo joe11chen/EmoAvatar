@@ -267,23 +267,35 @@ def create_dir(dir_path):
 current_dir = os.path.dirname(os.path.abspath(__file__))
 
 
-def create_musetalk_human(file, avatar_id):
+def _avatar_save_path(avatar_id, output_dir=None):
+    if output_dir:
+        path = os.path.expanduser(str(output_dir))
+        if os.path.isabs(path):
+            return path
+        return os.path.join(current_dir, path)
+    return os.path.join(current_dir, './data/avatars', avatar_id)
+
+
+def create_musetalk_human(file, avatar_id, clean=False, output_dir=None, user_id=None):
     # 保存文件设置 可以不动
-    save_path = os.path.join(current_dir, f'./data/avatars/{avatar_id}')
-    save_full_path = os.path.join(current_dir, f'./data/avatars/{avatar_id}/full_imgs')
+    save_path = _avatar_save_path(avatar_id, output_dir=output_dir)
+    if clean and os.path.exists(save_path):
+        shutil.rmtree(save_path)
+    save_full_path = os.path.join(save_path, 'full_imgs')
     create_dir(save_path)
     create_dir(save_full_path)
-    mask_out_path = os.path.join(current_dir, f'./data/avatars/{avatar_id}/mask')
+    mask_out_path = os.path.join(save_path, 'mask')
     create_dir(mask_out_path)
 
     # 模型
-    mask_coords_path = os.path.join(current_dir, f'{save_path}/mask_coords.pkl')
-    coords_path = os.path.join(current_dir, f'{save_path}/coords.pkl')
-    latents_out_path = os.path.join(current_dir, f'{save_path}/latents.pt')
+    mask_coords_path = os.path.join(save_path, 'mask_coords.pkl')
+    coords_path = os.path.join(save_path, 'coords.pkl')
+    latents_out_path = os.path.join(save_path, 'latents.pt')
 
-    with open(os.path.join(current_dir, f'{save_path}/avator_info.json'), "w") as f:
+    with open(os.path.join(save_path, 'avator_info.json'), "w") as f:
         json.dump({
             "avatar_id": avatar_id,
+            "user_id": user_id,
             "video_path": file,
             "bbox_shift": args.bbox_shift
         }, f)
@@ -347,6 +359,27 @@ def create_musetalk_human(file, avatar_id):
     torch.save(input_latent_list_cycle, os.path.join(latents_out_path))
 
 
+def load_batch_manifest(manifest_path):
+    with open(manifest_path, 'r', encoding='utf-8') as f:
+        payload = json.load(f)
+    entries = payload.get('items') if isinstance(payload, dict) else payload
+    if not isinstance(entries, list):
+        raise ValueError('batch manifest must be a list or an object with an items list')
+
+    normalized = []
+    for idx, item in enumerate(entries):
+        if not isinstance(item, dict):
+            raise ValueError(f'batch manifest item {idx} must be an object')
+        file = str(item.get('file') or '').strip()
+        avatar_id = str(item.get('avatar_id') or '').strip()
+        output_dir = str(item.get('output_dir') or '').strip()
+        user_id = str(item.get('user_id') or '').strip()
+        if not file or not avatar_id:
+            raise ValueError(f'batch manifest item {idx} requires file and avatar_id')
+        normalized.append({'file': file, 'avatar_id': avatar_id, 'output_dir': output_dir, 'user_id': user_id})
+    return normalized
+
+
 # initialize the mmpose model
 # device = "cuda" if torch.cuda.is_available() else ("mps" if (hasattr(torch.backends, "mps") and torch.backends.mps.is_available()) else "cpu")
 # fa = FaceAlignment(1, flip_input=False, device=device)
@@ -367,6 +400,25 @@ if __name__ == '__main__':
     parser.add_argument("--avatar_id",
                         type=str,
                         default='musetalk_avatar1',
+                        )
+    parser.add_argument("--batch_manifest",
+                        type=str,
+                        default='',
+                        help="JSON manifest for batch generation. Each item needs file and avatar_id.",
+                        )
+    parser.add_argument("--output_dir",
+                        type=str,
+                        default='',
+                        help="Explicit output directory for single-avatar generation.",
+                        )
+    parser.add_argument("--user_id",
+                        type=str,
+                        default='',
+                        help="User id recorded in avator_info.json.",
+                        )
+    parser.add_argument("--clean",
+                        action="store_true",
+                        help="Remove each target avatar directory before generating resources.",
                         )
     parser.add_argument("--version", type=str, default="v15", choices=["v1", "v15"], help="Version of MuseTalk: v1 or v15")
     parser.add_argument("--gpu_id", type=int, default=0, help="GPU ID to use")
@@ -394,4 +446,20 @@ if __name__ == '__main__':
     else:  # v1
         fp = FaceParsing()
 
-    create_musetalk_human(args.file, args.avatar_id)
+    if args.batch_manifest:
+        for item in load_batch_manifest(args.batch_manifest):
+            create_musetalk_human(
+                item['file'],
+                item['avatar_id'],
+                clean=args.clean,
+                output_dir=item.get('output_dir') or None,
+                user_id=item.get('user_id') or None,
+            )
+    else:
+        create_musetalk_human(
+            args.file,
+            args.avatar_id,
+            clean=args.clean,
+            output_dir=args.output_dir or None,
+            user_id=args.user_id or None,
+        )

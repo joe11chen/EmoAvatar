@@ -61,10 +61,34 @@ class AvatarMeta:
     length: int
     index: int = 0
         
-def load_multi_avatar(avatar_ids: list[EMOTION]):
+def _safe_resource_id(value, fallback="default"):
+    text = str(value or "").strip()
+    if not text:
+        text = fallback
+    return "".join(ch for ch in text if ch.isalnum() or ch in {"-", "_", "."}) or fallback
+
+
+def _resolve_avatar_path(avatar_id, user_id=None):
+    avatar_id = _safe_resource_id(avatar_id, fallback=str(avatar_id or "default"))
+    if user_id:
+        user_path = f"./data/{_safe_resource_id(user_id)}/avatars/{avatar_id}"
+        if os.path.exists(user_path):
+            return user_path
+    return f"./data/avatars/{avatar_id}"
+
+
+def _resolve_transition_path(name, user_id=None):
+    if user_id:
+        user_path = f"./data/{_safe_resource_id(user_id)}/transitions/{name}"
+        if os.path.exists(user_path):
+            return user_path
+    return f"./data/transitions/{name}"
+
+
+def load_multi_avatar(avatar_ids: list[EMOTION], user_id=None):
     avatars = {}
     for avatar_id in avatar_ids:
-        frame_list_cycle, mask_list_cycle, coord_list_cycle, mask_coords_list_cycle, input_latent_list_cycle = load_avatar(avatar_id.value)
+        frame_list_cycle, mask_list_cycle, coord_list_cycle, mask_coords_list_cycle, input_latent_list_cycle = load_avatar(avatar_id.value, user_id=user_id)
         avatars[avatar_id] = AvatarMeta(frame_list_cycle=frame_list_cycle,
                                         mask_list_cycle=mask_list_cycle,
                                         coord_list_cycle=coord_list_cycle,
@@ -74,22 +98,21 @@ def load_multi_avatar(avatar_ids: list[EMOTION]):
                                         )
     return avatars
 
-def load_transitions():
-    transition_path = "./data/transitions"
-
+def load_transitions(user_id=None):
     transitions = {}
     for emo1 in EMOTION:
         transitions[emo1] = {}
         for emo2 in EMOTION:
             if emo1 != emo2:
-                if os.path.exists(os.path.join(transition_path, f"{emo1.name}2{emo2.name}")):
+                transition_dir = _resolve_transition_path(f"{emo1.name}2{emo2.name}", user_id=user_id)
+                if os.path.exists(transition_dir):
                     logger.info(f"Loading transition frames for {emo1} to {emo2}")
-                    image_list = glob.glob(os.path.join(transition_path, f"{emo1.name}2{emo2.name}", '*.[jpJP][pnPN]*[gG]'))
+                    image_list = glob.glob(os.path.join(transition_dir, '*.[jpJP][pnPN]*[gG]'))
                     image_list = sorted(image_list, key=lambda x: int(os.path.splitext(os.path.basename(x))[0].split('_')[-1]))
                     frames = read_imgs(image_list)
                     transitions[emo1][emo2] = frames
                 else:
-                    logger.warning(f"No transition frames found for {emo1} to {emo2}. Expected folder: {os.path.join(transition_path, f'{emo1.name}2{emo2.name}')}")
+                    logger.warning(f"No transition frames found for {emo1} to {emo2}. Expected folder: {transition_dir}")
                     transitions[emo1][emo2] = []
 
 
@@ -125,10 +148,10 @@ def load_model():
     audio_processor = Audio2Feature(model_path="./models/whisper")
     return vae, unet, pe, timesteps, audio_processor
 
-def load_avatar(avatar_id):
+def load_avatar(avatar_id, user_id=None):
     #self.video_path = '' #video_path
     #self.bbox_shift = opt.bbox_shift
-    avatar_path = f"./data/avatars/{avatar_id}"
+    avatar_path = _resolve_avatar_path(avatar_id, user_id=user_id)
     full_imgs_path = f"{avatar_path}/full_imgs" 
     coords_path = f"{avatar_path}/coords.pkl"
     latents_out_path= f"{avatar_path}/latents.pt"

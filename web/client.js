@@ -22,11 +22,16 @@ function negotiate() {
         });
     }).then(() => {
         var offer = pc.localDescription;
+        var payload = {
+            sdp: offer.sdp,
+            type: offer.type,
+        };
+        var userIdEl = document.getElementById('user_id');
+        if (userIdEl && userIdEl.value.trim()) {
+            payload.user_id = userIdEl.value.trim();
+        }
         return fetch('/offer', {
-            body: JSON.stringify({
-                sdp: offer.sdp,
-                type: offer.type,
-            }),
+            body: JSON.stringify(payload),
             headers: {
                 'Content-Type': 'application/json'
             },

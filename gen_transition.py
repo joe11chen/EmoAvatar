@@ -1,6 +1,10 @@
 import subprocess
 import os
 import re
+import argparse
+import json
+import shutil
+import shlex
 
 # # --- 配置参数 ---
 # VIDEO_1 = "assets/default.mp4"
@@ -100,6 +104,79 @@ def run_command(cmd, description):
 # run_command(fcvg_cmd, f"生成视频 {TRNASITION2}")
 
 
+def parse_args():
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--user_id", default="default", help="User resource id under data/{user_id}.")
+    parser.add_argument("--manifest", default="", help="JSON manifest with transition videos to convert.")
+    parser.add_argument("--fps", type=int, default=25, help="Frame rate for exported transition frames.")
+    parser.add_argument("--pts_factor", type=float, default=1.0, help="setpts factor used when exporting frames.")
+    parser.add_argument("--clean", action="store_true", help="Remove each output directory before exporting frames.")
+    parser.add_argument(
+        "--legacy",
+        action="store_true",
+        help="Write transitions to legacy data/transitions instead of data/{user_id}/transitions.",
+    )
+    return parser.parse_args()
+
+
+def safe_name(value, fallback="default"):
+    return re.sub(r"[^0-9A-Za-z_.-]+", "", str(value or "").strip()) or fallback
+
+
+def load_manifest(path):
+    with open(path, "r", encoding="utf-8") as handle:
+        payload = json.load(handle)
+    items = payload.get("items") if isinstance(payload, dict) else payload
+    if not isinstance(items, list):
+        raise ValueError("transition manifest must be a list or an object with an items list")
+
+    normalized = []
+    for idx, item in enumerate(items):
+        if not isinstance(item, dict):
+            raise ValueError(f"transition manifest item {idx} must be an object")
+        name = safe_name(item.get("name"))
+        file = str(item.get("file") or "").strip()
+        output_dir = str(item.get("output_dir") or "").strip()
+        if not file or not output_dir:
+            raise ValueError(f"transition manifest item {idx} requires file and output_dir")
+        normalized.append({"name": name, "file": file, "output_dir": output_dir})
+    return normalized
+
+
+def export_transition(video_path, output_dir, name, fps, pts_factor, clean=False):
+    if clean and os.path.exists(output_dir):
+        shutil.rmtree(output_dir)
+    os.makedirs(output_dir, exist_ok=True)
+    quoted_video = shlex.quote(video_path)
+    quoted_output = shlex.quote(f"{output_dir}/frame_%04d.png")
+    run_command(
+        f"ffmpeg -y -i {quoted_video} "
+        f"-vf 'setpts={pts_factor}*PTS' "
+        f"-r {fps} "
+        f"-an {quoted_output}",
+        f"导出切换动画 {name}",
+    )
+
+
+args = parse_args()
+safe_user_id = safe_name(args.user_id)
+final_frames_dir = "data/transitions" if args.legacy else f"data/{safe_user_id}/transitions"
+
+if args.manifest:
+    print("\n--- Manifest mode: 导出 transition 图片序列 ---")
+    for item in load_manifest(args.manifest):
+        export_transition(
+            item["file"],
+            item["output_dir"],
+            item["name"],
+            args.fps,
+            args.pts_factor,
+            clean=args.clean,
+        )
+    print("\n✨ 全部任务完成！")
+    raise SystemExit(0)
+
+
 # --- 步骤 3: 视频 A 加速并转图片序列 ---
 print("\n--- Step 3: 加速 1.5x 并导出图片序列 ---")
 
@@ -117,19 +194,20 @@ videos = [
 
 for v in videos:
     name = os.path.basename(v).split('.')[0]
-    if not os.path.exists(f"./data/transitions/{name}"):
-        os.makedirs(f"./data/transitions/{name}")
+    transition_dir = os.path.join(final_frames_dir, name)
+    if not os.path.exists(transition_dir):
+        os.makedirs(transition_dir)
         
 
-    pts_factor = 1 
+    pts_factor = args.pts_factor
     # 这里的 INPUT 指向 Step 2 生成的结果
     # 请确认 demo_FCVG.py 生成的文件名，这里暂定为 output.mp4
     run_command(
         f"ffmpeg -y -i {v} "
         f"-vf 'setpts={pts_factor}*PTS' "
-        f"-r 25 "
-        f"-an ./data/transitions/{name}/frame_%04d.png",
-        "加速并提取 PNG 序列"
+        f"-r {args.fps} "
+        f"-an {transition_dir}/frame_%04d.png",
+        f"导出切换动画 {name}",
     )
 
 # run_command(

@@ -4,6 +4,9 @@ from enum import Enum
 from typing import Any
 
 
+DEFAULT_USER_ID = "default"
+
+
 class EMOTION(Enum):
     DEFAULT = "DEFAULT"
     # Five-stage cognitive-emotion progression.
@@ -54,7 +57,7 @@ EMOTION_AVATAR_ID = {
     EMOTION.RELIEF_GROWTH: EMOTION.RELIEF_GROWTH.value,
 }
 
-# Transition folder key prefix under data/transitions: {from_key}2{to_key}
+# Transition folder key prefix under data/{user_id}/transitions: {from_key}2{to_key}
 EMOTION_TRANSITION_PROFILE = {
     EMOTION.DEFAULT: EMOTION.DEFAULT.name,
     EMOTION.EMOTIONAL_FLOODING: EMOTION.EMOTIONAL_FLOODING.name,

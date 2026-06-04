@@ -22,7 +22,7 @@ from core.contracts import normalize_eventpoint
 from core.plugin_system import PluginType, available_plugins, create, register_builtin_plugins
 from core.runtime.asr.base import BaseASR
 from core.runtime.tts.base import BaseTTS
-from data import EMOTION, DEFAULT_EMOTION
+from data import EMOTION, DEFAULT_EMOTION, normalize_emotion
 from logger import logger
 
 
@@ -580,6 +580,50 @@ class BaseReal:
         )
         return combine_frame, (combine_frame.copy() if copy_output else combine_frame)
 
+    def _build_transition_fallback_frame(
+        self,
+        primary_event,
+        fallback_idx,
+        fallback_emo,
+        audio_frames,
+        transition_start,
+        transition_duration,
+        last_silent_frame,
+        last_speaking_frame,
+        copy_output=True,
+    ):
+        target_emo = normalize_emotion(
+            primary_event.get("to") or primary_event.get("emo") or DEFAULT_EMOTION,
+            strict=False,
+        )
+        if self.multi_avatar:
+            if target_emo not in self.avatars:
+                logger.warning("Missing target avatar for transition fallback: %s. Skip frame.", target_emo)
+                return None, last_silent_frame
+            idx = self.avatars[target_emo].index % self.avatars[target_emo].length
+            self.avatars[target_emo].index += 1
+            return self._build_silence_frame(
+                idx,
+                target_emo,
+                audio_frames,
+                transition_start,
+                transition_duration,
+                last_silent_frame,
+                last_speaking_frame,
+                copy_output=copy_output,
+            )
+
+        return self._build_silence_frame(
+            fallback_idx,
+            fallback_emo,
+            audio_frames,
+            transition_start,
+            transition_duration,
+            last_silent_frame,
+            last_speaking_frame,
+            copy_output=copy_output,
+        )
+
     def process_frames(self, quit_event, loop=None, audio_track=None, video_track=None):
         monitor_path = self._build_frame_monitor_path()
         with open(monitor_path, "w+") as frame_log:
@@ -633,10 +677,23 @@ class BaseReal:
                     _transition_start = time.time()
                 _last_speaking = current_speaking
 
-                if status == "transition":
+                transition_enabled = getattr(self.config.renderer, "enable_transition", True)
+                if status == "transition" and transition_enabled:
                     combine_frame = self._build_transition_frame(primary_event)
                     if combine_frame is None:
-                        continue
+                        combine_frame, _last_silent_frame = self._build_transition_fallback_frame(
+                            primary_event,
+                            idx,
+                            emo,
+                            audio_frames,
+                            _transition_start,
+                            _transition_duration,
+                            _last_silent_frame,
+                            _last_speaking_frame,
+                            copy_output=not httpfile_mode,
+                        )
+                        if combine_frame is None:
+                            continue
                     if profiler is not None:
                         profiler.incr("process.frames.transition")
 

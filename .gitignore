@@ -18,6 +18,14 @@ models/
 *.log
 dist
 
+assets/*
+!assets/user/user_ccy/**
+
+data/*
+!data/avatars/**
+!data/user_ccy/**
+
+
 FCVG/
 .vscode
 .git

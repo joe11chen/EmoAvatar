@@ -71,6 +71,7 @@ class IndexTTS2(BaseTTS):
                 msg=(segment_text, textevent),
                 is_first=(seg_idx == 0),
                 is_last=(seg_idx == len(segments) - 1),
+                emotion=emotion,
             )
             self.prev_emo = emotion
 
@@ -100,22 +101,29 @@ class IndexTTS2(BaseTTS):
         textevent: dict,
         text: str,
     ) -> int:
+        if not getattr(self.config.renderer, "enable_transition", True):
+            return 0
         transitions = getattr(self.parent, "transitions", None)
         if not transitions:
             return 0
         frames = transitions.get(prev_emo, {}).get(next_emo, [])
         if not frames:
+            logger.info("No transition frames for %s -> %s, skip transition silence.", prev_emo, next_emo)
             return 0
         emitted = 0
         for frame_idx in range(len(frames) * 2):
-            eventpoint = {
-                "status": "transition",
-                "text": text,
-                "from": prev_emo,
-                "to": next_emo,
-                "transition_frame_idx": frame_idx,
-            }
+            eventpoint = {"text": text}
             eventpoint.update(textevent)
+            eventpoint.update(
+                {
+                    "status": "transition",
+                    "text": text,
+                    "from": prev_emo,
+                    "to": next_emo,
+                    "emo": next_emo,
+                    "transition_frame_idx": frame_idx,
+                }
+            )
             self.parent.put_audio_frame(np.zeros(self.chunk, np.float32), eventpoint)
             emitted += 1
         return emitted
@@ -231,6 +239,7 @@ class IndexTTS2(BaseTTS):
         msg: tuple[str, dict],
         is_first: bool = False,
         is_last: bool = False,
+        emotion: EMOTION | None = None,
     ) -> int:
         text, textevent = msg
         try:
@@ -267,6 +276,9 @@ class IndexTTS2(BaseTTS):
                 status = "start" if first_chunk and is_first else "streaming"
                 eventpoint = {"status": status, "text": text}
                 eventpoint.update(textevent)
+                eventpoint.update({"status": status, "text": text})
+                if emotion is not None:
+                    eventpoint["emo"] = emotion
                 self.parent.put_audio_frame(stream[idx:idx + self.chunk], eventpoint)
                 streamlen -= self.chunk
                 idx += self.chunk
@@ -276,6 +288,9 @@ class IndexTTS2(BaseTTS):
             if is_last:
                 eventpoint = {"status": "end", "text": text}
                 eventpoint.update(textevent)
+                eventpoint.update({"status": "end", "text": text})
+                if emotion is not None:
+                    eventpoint["emo"] = emotion
                 self.parent.put_audio_frame(np.zeros(self.chunk, np.float32), eventpoint)
                 audio_frame_cnt += 1
 
@@ -284,6 +299,9 @@ class IndexTTS2(BaseTTS):
                 tail_status = "end" if is_last else "streaming"
                 tail_event = {"status": tail_status, "text": text}
                 tail_event.update(textevent)
+                tail_event.update({"status": tail_status, "text": text})
+                if emotion is not None:
+                    tail_event["emo"] = emotion
                 self.parent.put_audio_frame(np.zeros(self.chunk, np.float32), tail_event)
                 audio_frame_cnt += 1
             return audio_frame_cnt
