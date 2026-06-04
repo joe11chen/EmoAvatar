@@ -19,12 +19,14 @@ models/
 dist
 
 assets/*
+!assets/user/
+assets/user/*
+!assets/user/user_ccy/
 !assets/user/user_ccy/**
 
 data/*
-!data/avatars/**
+!data/user_ccy/
 !data/user_ccy/**
-
 
 FCVG/
 .vscode
