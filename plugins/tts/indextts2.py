@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 import time
 from pathlib import Path
 from typing import Any
@@ -26,10 +27,8 @@ class IndexTTS2(BaseTTS):
         self.server_url = config.tts.server
         self.max_tokens = config.tts.max_tokens
         self.prev_emo = DEFAULT_EMOTION
-
-        default_ref = Path("data/audios/voice_11.wav")
-        ref_file = Path(str(config.tts.ref_file))
-        self.ref_audio_path = ref_file if ref_file.exists() else default_ref
+        self.default_male_ref = Path(str(config.tts.default_male))
+        self.default_female_ref = Path(str(config.tts.default_female))
 
         try:
             from gradio_client import Client, handle_file
@@ -48,6 +47,7 @@ class IndexTTS2(BaseTTS):
         tts_start = time.perf_counter()
         text, textevent = msg
         emotion = _normalize_emotion(textevent.get("emo"))
+        ref_audio_path = self._resolve_ref_audio_path(textevent.get("user_id"))
         segments = self.split_text(text)
         if not segments:
             logger.warning("IndexTTS2 split produced no segments, fallback to raw text")
@@ -58,7 +58,7 @@ class IndexTTS2(BaseTTS):
                 break
 
             emotion_vector = EMOTION_VECTOR.get(emotion, EMOTION_VECTOR[DEFAULT_EMOTION])
-            audio_file = self.indextts2_generate(segment_text, emotion_vector)
+            audio_file = self.indextts2_generate(segment_text, emotion_vector, ref_audio_path)
             if not audio_file:
                 logger.error("IndexTTS2 generation failed for segment %d", seg_idx + 1)
                 continue
@@ -145,14 +145,46 @@ class IndexTTS2(BaseTTS):
             logger.exception("IndexTTS2 split_text failed, fallback to raw text")
             return [text]
 
-    def indextts2_generate(self, text: str, emotion_vector: list[float]):
+    @staticmethod
+    def _safe_user_id(value: Any) -> str:
+        text = str(value or "").strip()
+        safe = "".join(ch for ch in text if ch.isalnum() or ch in {"-", "_", "."})
+        return safe or "default"
+
+    def _resolve_ref_audio_path(self, user_id: Any | None) -> Path:
+        safe_user_id = self._safe_user_id(user_id)
+        profile_path = Path("data") / safe_user_id / "avatar_profile.json"
+        voice = "male.wav"
+        if profile_path.exists():
+            try:
+                payload = json.loads(profile_path.read_text(encoding="utf-8"))
+                if isinstance(payload, dict):
+                    voice = str(payload.get("voice") or "").strip().lower()
+            except Exception:
+                logger.exception("Failed to read avatar profile, fallback to male voice: %s", profile_path)
+        else:
+            logger.info("Avatar profile missing for user_id=%s, fallback to male voice.", safe_user_id)
+
+        if voice == "female.wav":
+            ref_path = self.default_female_ref
+        elif voice == "male.wav":
+            ref_path = self.default_male_ref
+        else:
+            logger.warning("Unsupported avatar voice '%s' for user_id=%s, fallback to male voice.", voice, safe_user_id)
+            ref_path = self.default_male_ref
+
+        if not ref_path.exists():
+            raise FileNotFoundError(f"TTS reference audio missing for user_id={safe_user_id}: {ref_path}")
+        return ref_path
+
+    def indextts2_generate(self, text: str, emotion_vector: list[float], ref_audio_path: Path):
         start = time.perf_counter()
         vec = list(emotion_vector[:8]) + [0.0] * max(0, 8 - len(emotion_vector))
         try:
             result = self.client.predict(
                 emo_control_method="Use emotion vectors",
-                prompt=self.handle_file(str(self.ref_audio_path)),
-                emo_ref_path=self.handle_file(str(self.ref_audio_path)),
+                prompt=self.handle_file(str(ref_audio_path)),
+                emo_ref_path=self.handle_file(str(ref_audio_path)),
                 text=text,
                 api_name="/gen_single",
                 vec1=vec[0],
@@ -176,6 +208,8 @@ class IndexTTS2(BaseTTS):
     def synthesize_to_wav(self, text: str, emotion: EMOTION | str | None, output_path: str) -> dict[str, Any]:
         tts_start = time.perf_counter()
         emo = _normalize_emotion(emotion)
+        # TODO: audio_jobs should pass user_id and resolve the matching avatar profile.
+        ref_audio_path = self._resolve_ref_audio_path(None)
         segments = self.split_text(text)
         if not segments:
             logger.warning("IndexTTS2 split produced no segments, fallback to raw text")
@@ -184,7 +218,7 @@ class IndexTTS2(BaseTTS):
         merged: list[np.ndarray] = []
         for seg_idx, segment_text in enumerate(segments):
             emotion_vector = EMOTION_VECTOR.get(emo, EMOTION_VECTOR[DEFAULT_EMOTION])
-            audio_file = self.indextts2_generate(segment_text, emotion_vector)
+            audio_file = self.indextts2_generate(segment_text, emotion_vector, ref_audio_path)
             if not audio_file:
                 logger.error("IndexTTS2 generation failed for segment %d", seg_idx + 1)
                 continue

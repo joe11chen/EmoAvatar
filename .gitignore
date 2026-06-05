@@ -25,6 +25,10 @@ assets/user/*
 !assets/user/user_ccy/**
 
 data/*
+!data/audios/
+data/audios/*
+!data/audios/male.wav
+!data/audios/female.wav
 !data/user_ccy/
 !data/user_ccy/**
 

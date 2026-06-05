@@ -35,6 +35,15 @@ def _is_video_name(text: str) -> bool:
     return lowered.endswith(".mp4") or lowered.endswith(".mov") or lowered.endswith(".mkv")
 
 
+def _normalize_voice(value: Any | None) -> str:
+    voice = _safe_text(value).lower()
+    if not voice:
+        return "male.wav"
+    if voice not in {"male.wav", "female.wav"}:
+        raise ValueError(f"unsupported voice: {value}")
+    return voice
+
+
 @dataclass
 class AvatarJob:
     job_id: str
@@ -107,6 +116,7 @@ class AvatarJobManager:
         emotions_raw: Any | None = None,
         positive_prompt: str | None = None,
         negative_prompt: str | None = None,
+        voice: str | None = None,
     ) -> dict[str, Any]:
         if not self.config.enabled:
             raise RuntimeError("avatar jobs are disabled")
@@ -115,6 +125,7 @@ class AvatarJobManager:
 
         avatar_id = _safe_text(avatar_id) or uuid.uuid4().hex[:8]
         emotions = self._normalize_emotions(emotions_raw)
+        normalized_voice = _normalize_voice(voice)
         now = _now_iso()
         job_id = uuid.uuid4().hex
 
@@ -143,6 +154,7 @@ class AvatarJobManager:
         logger.info("avatar job queued: job_id=%s avatar_id=%s emotions=%s", job_id, avatar_id, job.emotions)
         job.extra["positive_prompt"] = _safe_text(positive_prompt)
         job.extra["negative_prompt"] = _safe_text(negative_prompt)
+        job.extra["voice"] = normalized_voice
         return job.to_dict()
 
     def get(self, job_id: str) -> dict[str, Any] | None:
@@ -205,6 +217,7 @@ class AvatarJobManager:
             except Exception as exc:
                 job.error = str(exc)
                 self._set_job_status(job, "failed")
+                self._mark_queued_items_skipped(job, "前置任务失败，job 已中断")
                 logger.exception("avatar job failed: job_id=%s", job_id)
             finally:
                 job.current_emotion = None
@@ -269,7 +282,7 @@ class AvatarJobManager:
                     self._set_emotion_status(job, emotion.value, "failed", message=str(exc))
                     logger.exception("avatar job emotion failed: job_id=%s emotion=%s", job.job_id, emotion.value)
                     if not self.config.continue_on_error:
-                        raise
+                        raise RuntimeError(f"emotion {emotion.value} failed: {exc}") from exc
 
             await self._run_transition_video_generation(job, session, api_base, image_ref)
 
@@ -300,6 +313,14 @@ class AvatarJobManager:
             if value is not None:
                 current[key] = value
         job.updated_at = _now_iso()
+
+    def _mark_queued_items_skipped(self, job: AvatarJob, message: str) -> None:
+        for emotion, state in list(job.emotion_status.items()):
+            if state.get("status") == "queued":
+                self._set_emotion_status(job, emotion, "skipped", message=message)
+        for transition, state in list(job.transition_status.items()):
+            if state.get("status") == "queued":
+                self._set_transition_status(job, transition, "skipped", message=message)
 
     def _normalize_emotions(self, raw: Any | None) -> list[EMOTION]:
         def without_default(items: Iterable[EMOTION]) -> list[EMOTION]:
@@ -416,6 +437,20 @@ class AvatarJobManager:
     def _transition_frames_dir(self, avatar_id: str, transition_name: str) -> Path:
         return Path("data") / self._musetalk_user_id(avatar_id) / "transitions" / self._safe_filename(transition_name)
 
+    def _avatar_profile_path(self, avatar_id: str) -> Path:
+        return Path("data") / self._musetalk_user_id(avatar_id) / "avatar_profile.json"
+
+    def _write_avatar_profile(self, job: AvatarJob, user_id: str, voice: str = "male.wav") -> None:
+        normalized_voice = _normalize_voice(voice)
+        profile_path = self._avatar_profile_path(user_id)
+        profile_path.parent.mkdir(parents=True, exist_ok=True)
+        payload = {
+            "user_id": self._musetalk_user_id(user_id),
+            "voice": normalized_voice,
+        }
+        profile_path.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
+        job.extra["avatar_profile"] = str(profile_path)
+
     @staticmethod
     def _transition_name(source: EMOTION, target: EMOTION) -> str:
         return f"{source.name}2{target.name}"
@@ -528,7 +563,7 @@ class AvatarJobManager:
                 self._set_transition_status(job, transition_name, "failed", message=str(exc))
                 logger.exception("avatar job transition failed: job_id=%s transition=%s", job.job_id, transition_name)
                 if not self.config.continue_on_error:
-                    raise
+                    raise RuntimeError(f"transition {transition_name} failed: {exc}") from exc
 
     async def _run_musetalk_generation(self, job: AvatarJob) -> None:
         manifest_items: list[dict[str, str]] = []
@@ -617,6 +652,7 @@ class AvatarJobManager:
                 user_id=item["user_id"],
                 avatar_dir=str(avatar_dir),
             )
+        self._write_avatar_profile(job, job.avatar_id, voice=getattr(job, "extra", {}).get("voice") or "male.wav")
         self._reload_renderer_user_resource(job, self._musetalk_user_id(job.avatar_id))
         logger.info(
             "avatar job musetalk done: job_id=%s items=%d sec=%.3f stdout=%s",

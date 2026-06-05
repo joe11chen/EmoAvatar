@@ -193,6 +193,13 @@
           <label for="image">上传图片</label>
           <input id="image" type="file" accept="image/*" />
         </div>
+        <div>
+          <label for="voice">voice</label>
+          <select id="voice">
+            <option value="male.wav" selected>male.wav</option>
+            <option value="female.wav">female.wav</option>
+          </select>
+        </div>
       </div>
 
       <div style="margin-top:12px;">
@@ -247,6 +254,7 @@
     const badgeEl = document.getElementById('status_badge');
     const imageEl = document.getElementById('image');
     const avatarIdEl = document.getElementById('avatar_id');
+    const voiceEl = document.getElementById('voice');
     const positivePromptEl = document.getElementById('positive_prompt');
     const negativePromptEl = document.getElementById('negative_prompt');
 
@@ -423,6 +431,7 @@
 
       const form = new FormData();
       form.append('image', file);
+      form.append('voice', voiceEl.value || 'male.wav');
       if (avatarIdEl.value.trim()) {
         form.append('avatar_id', avatarIdEl.value.trim());
       }

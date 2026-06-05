@@ -325,6 +325,7 @@ def register_http_routes(appasync: web.Application, context: RuntimeContext) -> 
             emotions = form.get("emotions")
             positive_prompt = form.get("positive_prompt")
             negative_prompt = form.get("negative_prompt")
+            voice = form.get("voice")
 
             image_bytes = image.file.read()
             job = await _avatar_jobs_or_raise().submit(
@@ -334,6 +335,7 @@ def register_http_routes(appasync: web.Application, context: RuntimeContext) -> 
                 emotions_raw=emotions,
                 positive_prompt=positive_prompt,
                 negative_prompt=negative_prompt,
+                voice=voice,
             )
             return _ok_response({"data": {"job_id": job["job_id"], "status": job["status"]}})
         except Exception as exc:

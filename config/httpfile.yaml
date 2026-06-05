@@ -27,6 +27,8 @@ tts:
   ref_text: null
   server: http://127.0.0.1:7860/
   max_tokens: 120
+  default_male: data/audios/male.wav
+  default_female: data/audios/female.wav
 
 transport:
   mode: httpfile
@@ -41,6 +43,7 @@ server:
 
 avatar_jobs:
   enable_transition: false
+  continue_on_error: false
   emotion_prompts:
     EMOTIONAL_FLOODING: ""
     RIGID_DEFENSE: ""

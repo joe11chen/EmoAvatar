@@ -1,264 +1,267 @@
-# LiveTalking（内部重构版）
+# LiveTalking
 
-本项目是面向“情感数字人实时推理”的工程化版本，当前主链路已统一为：
-
-`TTS(indextts2) -> ASR(museasr) -> Renderer(musetalk) -> WebRTC/RTCPush 输出`
-
-目标是让新同事可以快速接手、稳定运行、并在 `tts/asr/renderer` 三个模块内扩展。
-
----
-
-## 1. 当前状态（请先看）
-
-- 架构已收敛：仅保留三类插件
-  - `tts`
-  - `asr`
-  - `renderer`（模型渲染主干）
-- 启动入口统一：`--config <yaml>`
-- 传输层不再插件化（直接走固定实现）
-- 高频 frame 监控写入：`tmp/frame_monitor/session_<sessionid>.log`
-
----
-
-## 2. 目录结构（核心）
+面向情绪数字人的工程化运行与素材生成项目。当前主链路为：
 
 ```text
-app.py                        # 启动入口
-core/
-  plugin_system.py            # 插件注册/创建/启动校验
-  contracts.py                # 事件帧数据约定
-  runtime/
-    tts/base.py               # TTS 基类
-    asr/base.py               # ASR 基类
-    renderer/base.py          # Renderer 基类（主渲染循环）
-
-plugins/
-  tts/indextts2.py            # 当前 TTS 实现
-  asr/musetalk_asr.py         # 当前 ASR 实现
-  renderer/musetalk/
-    runtime.py                # MuseTalk 渲染器
-    inference_workers.py      # 推理 worker
-    assets.py                 # 素材/过渡帧加载
-
-server/
-  runtime_context.py          # 运行上下文
-  rtc_runtime.py              # 会话创建、推流会话
-  http_routes.py              # HTTP/WebRTC 路由
-
-scripts/smoke/startup_smoke.sh # 启动冒烟脚本
+TTS(indextts2) -> ASR(museasr) -> Renderer(musetalk) -> WebRTC / RTCPush / HTTPFile
 ```
 
----
+项目支持三类核心场景：
 
-## 3. 快速启动
+- 实时数字人会话：WebRTC 或 RTCPush 输出。
+- HTTPFile 异步任务：提交文本，生成 MP4 或 WAV 文件。
+- Avatar 素材生成：上传用户图片，批量生成用户专属 MuseTalk 数字人资源。
 
-### 3.1 环境
+## 快速启动
+
+准备环境：
 
 ```bash
 conda activate livetalking
 ```
 
-### 3.2 配置化启动（推荐）
-
-默认配置文件：`config/app.yaml`
-
-```bash
-python app.py --config config/app.yaml
-```
-
-当前线上 RTCPush 示例配置：`config/rtcpush.yaml`
-
-```bash
-python app.py --config config/rtcpush.yaml
-```
-
-WebRTC 示例配置：`config/webrtc.yaml`
-
-```bash
-python app.py --config config/webrtc.yaml
-```
-
-HTTP 文件模式示例配置：`config/httpfile.yaml`
+启动 HTTPFile 模式：
 
 ```bash
 python app.py --config config/httpfile.yaml
 ```
 
-访问：
-- 导航主页：`http://<server-ip>:6006/`
-- `http://<server-ip>:6006/webrtcapi.html`
-- 推荐前端：`http://<server-ip>:6006/dashboard.html`
-- HTTP 文件模式前端：`http://<server-ip>:6006/httpfile.html`
-- HTTP 纯音频模式前端：`http://<server-ip>:6006/audiofile.html`
-
----
-
-## 4. 冒烟与校验
-
-### 4.1 编译校验
+启动 RTCPush 模式：
 
 ```bash
-python -m py_compile app.py core/plugin_system.py
+python app.py --config config/rtcpush.yaml
+```
+
+启动 WebRTC 模式：
+
+```bash
+python app.py --config config/webrtc.yaml
+```
+
+常用页面：
+
+- 导航页：`http://<server-ip>:6006/`
+- HTTP 视频任务：`http://<server-ip>:6006/httpfile.html`
+- HTTP 纯音频任务：`http://<server-ip>:6006/audiofile.html`
+- Avatar 素材生成：`http://<server-ip>:6006/avatar_jobs.html`
+- WebRTC 示例：`http://<server-ip>:6006/webrtcapi.html`
+- RTCPush 示例：`http://<server-ip>:6006/rtcpushapi.html`
+
+## 核心目录
+
+```text
+app.py
+core/
+  config.py                    # YAML 配置加载
+  plugin_system.py             # 插件注册/创建
+  runtime/
+    tts/base.py
+    asr/base.py
+    renderer/base.py
+plugins/
+  tts/indextts2.py             # 当前 TTS
+  asr/musetalk_asr.py          # 当前 ASR
+  renderer/musetalk/
+    runtime.py                 # MuseTalk 会话与共享模型资源
+    assets.py                  # 用户资源/transition 加载
+    inference_workers.py       # 推理 worker
+server/
+  http_routes.py               # HTTP 接口
+  video_jobs.py                # HTTPFile MP4 任务
+  audio_jobs.py                # HTTPFile WAV 任务
+  avatar_jobs.py               # Avatar 素材生成任务
+docs/
+  httpfile_jobs_api.md
+  avatar_jobs_api.md
+```
+
+## 用户资源结构
+
+当前推荐资源结构按用户隔离：
+
+```text
+data/{user_id}/
+  avatar_profile.json
+  avatars/
+    EMOTIONAL_FLOODING/
+    RIGID_DEFENSE/
+    WAVERING_DOUBT/
+    OPEN_ACCEPTANCE/
+    RELIEF_GROWTH/
+  transitions/
+    DEFAULT2EMOTIONAL_FLOODING/
+    EMOTIONAL_FLOODING2DEFAULT/
+```
+
+说明：
+
+- `avatar_profile.json` 当前用于绑定 TTS 音色，示例：`{"user_id":"user_ccy","voice":"male.wav"}`。
+- `video_jobs` 会按 `user_id` 读取 `avatar_profile.json`，`voice=male.wav` 使用 `tts.default_male`，`voice=female.wav` 使用 `tts.default_female`。
+- profile 缺失或 voice 非法时回落到男声；如果对应参考音频文件不存在，会直接报错。
+- `DEFAULT` 是运行时基线/回落状态，不再作为 avatar job 默认生成情绪。
+- `data/avatars` 和 `data/transitions` 是 legacy 兼容目录。
+- 非默认用户不会自动 fallback 到 legacy transition，缺 transition 时会跳过 transition 插入。
+- 新资源生成完成后会尝试热重载对应 `user_id` 的 MuseTalk 资源。
+
+## 情绪枚举
+
+业务 avatar 默认只生成五个阶段：
+
+```text
+EMOTIONAL_FLOODING
+RIGID_DEFENSE
+WAVERING_DOUBT
+OPEN_ACCEPTANCE
+RELIEF_GROWTH
+```
+
+`DEFAULT` 仍保留为 TTS/渲染基线状态。
+
+## 配置重点
+
+配置入口统一为：
+
+```bash
+python app.py --config <yaml>
+```
+
+常用配置片段：
+
+```yaml
+renderer:
+  user_id: default
+  multi_avatar: true
+  batch_size: 16
+  enabletransition: false
+
+tts:
+  default_male: data/audios/male.wav
+  default_female: data/audios/female.wav
+
+transport:
+  mode: httpfile
+  httpfile_batch_cap: 8
+
+avatar_jobs:
+  enable_transition: false
+  continue_on_error: false
+  emotion_prompts:
+    EMOTIONAL_FLOODING: ""
+    RIGID_DEFENSE: ""
+    WAVERING_DOUBT: ""
+    OPEN_ACCEPTANCE: ""
+    RELIEF_GROWTH: ""
+```
+
+两个 transition 开关含义不同：
+
+| 配置 | 默认 | 作用 |
+| --- | --- | --- |
+| `renderer.enabletransition` | `true` | 运行时播报是否插入 transition 帧 |
+| `avatar_jobs.enable_transition` | `false` | Avatar 素材生成时是否调用 API 生成 transition 资源 |
+| `avatar_jobs.continue_on_error` | `false` | Avatar 素材生成失败后是否继续后续情绪；默认失败即终止整个 job |
+
+当 `avatar_jobs.enable_transition=true` 时，只为每个业务情绪生成：
+
+- `DEFAULT2{EMOTION}`
+- `{EMOTION}2DEFAULT`
+
+不会生成业务情绪之间互相切换的 transition。
+
+## HTTP 接口文档
+
+上游或前端对接优先看：
+
+- [HTTPFile Video/Audio Jobs](docs/httpfile_jobs_api.md)
+- [Avatar Jobs](docs/avatar_jobs_api.md)
+
+常用接口：
+
+| 接口 | 说明 |
+| --- | --- |
+| `POST /video_jobs` | 提交文本生成 MP4 |
+| `GET /video_jobs/{job_id}` | 查询 MP4 任务 |
+| `GET /video_jobs/{job_id}/file` | 下载/预览 MP4 |
+| `POST /audio_jobs` | 提交文本生成 WAV |
+| `GET /audio_jobs/{job_id}` | 查询 WAV 任务 |
+| `GET /audio_jobs/{job_id}/file` | 下载/预览 WAV |
+| `GET /avatar_jobs/options` | 获取 avatar 生成选项 |
+| `POST /avatar_jobs` | 上传图片并提交素材生成任务 |
+| `GET /avatar_jobs/{job_id}` | 查询素材生成任务 |
+| `POST /avatar_resources/reload` | 热重载指定用户资源 |
+
+统一返回：
+
+```json
+{"code":0,"msg":"ok","data":{}}
+```
+
+失败返回：
+
+```json
+{"code":-1,"msg":"错误信息"}
+```
+
+## Avatar 素材生成链路
+
+1. 前端上传用户图片到 `POST /avatar_jobs`。
+2. 后端为每个业务情绪上传驱动视频并调用外部工作流 API。
+3. API 返回视频后保存到 `assets/user/{user_id}/{EMOTION}_{job}.mp4`。
+4. 后端调用 `genavatar_musetalk.py` 生成 MuseTalk 资源到 `data/{user_id}/avatars/{EMOTION}`。
+5. 如果 `avatar_jobs.enable_transition=true`，额外生成 `DEFAULT <-> EMOTION` transition 视频并调用 `gen_transition.py` 转帧到 `data/{user_id}/transitions`。
+6. 资源完成后尝试热重载 renderer 资源缓存。
+
+## HTTPFile 任务链路
+
+视频：
+
+```text
+POST /video_jobs -> tmp/video_jobs/{job_id}.mp4
+```
+
+音频：
+
+```text
+POST /audio_jobs -> tmp/audio_jobs/{job_id}.wav
+```
+
+`video_jobs` 推荐传 `user_id`，用于选择 `data/{user_id}` 下的数字人资源；不传时使用配置中的 `renderer.user_id`。TTS 音色也由该 `user_id` 对应的 `data/{user_id}/avatar_profile.json` 决定。
+
+## TODO
+
+- `audio_jobs` 支持 `user_id`，按用户 profile 选择音色。
+- WebRTC/RTCPush 实时会话完整接入用户 profile 音色选择。
+- Avatar 生成接口和页面仅支持 `voice=male.wav/female.wav`，后续可扩展更多 voice 文件选择。
+
+## 静态检查
+
+常用检查：
+
+```bash
+python -m py_compile app.py core/config.py server/http_routes.py
 python -m compileall -q core plugins server app.py
 ```
 
-### 4.2 启动冒烟
+文档/代码改动后建议：
 
 ```bash
-PORT=6006 STARTUP_TIMEOUT_SEC=300 bash scripts/smoke/startup_smoke.sh
+git diff --check
 ```
 
----
+## 常见排障
 
-## 5. 配置字段（严格模式）
+- `unsupported emotion`：检查 emotion 是否为枚举名或支持的中文别名。
+- `job is not ready`：任务还在 `queued/running`，等待成功后再下载文件。
+- `result video url not found`：外部工作流返回结果中没有可用 output 视频 URL。
+- 生成了默认人物：确认请求传了正确 `user_id`，并检查 `data/{user_id}/avatars/{EMOTION}` 是否存在。
+- 缺 transition：如果 `renderer.enabletransition=false`，运行时不会插 transition；如果用户 transition 不存在，也会跳过插入。
 
-- 命令行只保留一个参数：`--config`
-- 业务参数全部从 YAML 读取，不再支持 CLI 覆盖
+## 二次开发
 
-YAML 对应结构（节选）：
+新增插件遵循现有三类扩展点：
 
-```yaml
-plugins:
-  tts: indextts2
-  asr: museasr
-  renderer: musetalk
+- TTS：继承 `core.runtime.tts.base.BaseTTS`，注册 `PluginType.TTS`。
+- ASR：继承 `core.runtime.asr.base.BaseASR`，注册 `PluginType.ASR`。
+- Renderer：继承 `core.runtime.renderer.base.BaseReal`，注册 `PluginType.RENDERER`。
 
-renderer:
-  avatar_id: avator_1
-  multi_avatar: true
-  batch_size: 16
-
-transport:
-  mode: rtcpush
-  rtc_audio_queue_maxsize: 600
-  rtc_video_queue_maxsize: 300
-  push_url: http://localhost:1985/rtc/v1/whip/?app=live&stream=livestream
-
-server:
-  listenport: 6006
-```
-
-HTTP 文件模式可用配置项（YAML）：
-
-- `transport.httpfile_batch_cap`：运行时 batch 上限（默认 `8`，用于限制 `transport.mode=httpfile` 下的端到端时延）
-
----
-
-## 6. HTTP 接口（常用）
-
-来自 `server/http_routes.py`：
-
-上游对接请优先参考独立接口文档：  
-`docs/httpfile_jobs_api.md`
-
-- `POST /offer`：建立 WebRTC 会话
-- `POST /human`：文本输入（echo/chat）
-- `POST /humanaudio`：上传音频输入
-- `POST /interrupt_talk`：打断当前播报
-- `POST /set_audiotype`：切换自定义静默动作
-- `POST /record`：开始/结束录制
-- `POST /is_speaking`：查询当前是否在说话
-
-仅 `transport.mode=httpfile` 可用：
-
-- `POST /video_jobs`：提交文本任务
-- `GET /video_jobs/{job_id}`：查询任务状态
-- `GET /video_jobs/{job_id}/file`：获取生成 MP4（支持 `?download=1`）
-
-纯音频任务（需求约束，`transport.mode=httpfile`）：
-
-- 目标：仅输出语音文件，不启动数字人渲染，不生成视频
-- 主链路：仅复用 TTS（不走 ASR / MuseTalk / process_frames）
-- 产物路径：`tmp/audio_jobs/{job_id}.wav`
-- 接口：
-  - `POST /audio_jobs`：提交文本任务
-  - `GET /audio_jobs/{job_id}`：查询任务状态
-  - `GET /audio_jobs/{job_id}/file`：获取 WAV（支持 `?download=1`）
-- 返回约定与 video_jobs 保持一致：
-  - 成功：`{"code":0,"msg":"ok","data":...}`
-  - 失败：`{"code":-1,"msg":"..."}`
-
-返回约定：
-
-- 成功：`{"code":0,"msg":"ok","data":...}`
-- 失败：`{"code":-1,"msg":"..."}`
-
----
-
-## 7. HTTPFile 性能统计
-
-日志关键指标（`[httpfile-prof]`）：
-
-- `queue_wait_sec`
-- `time_to_first_speaking_sec`
-- `completion_summary`
-- `record_active_sec`
-- `stop_record_sec`
-- `move_output_sec` / `drive_total_sec`
-- `job_total_sec`
-- `tts_total_sec`
-- `request_to_file_sec`
-
-统计脚本：
-
-```bash
-python scripts/httpfile_log_stats.py livetalking.log
-```
-
-常用参数：
-
-```bash
-# 按服务端任务耗时排序慢任务
-python scripts/httpfile_log_stats.py livetalking.log --top-metric job_total_sec --top 20
-
-# 输出每个 job 的明细
-python scripts/httpfile_log_stats.py livetalking.log --show-jobs
-```
-
----
-
-## 8. 二次开发指南（新同事最常用）
-
-### 8.1 新增 TTS
-
-1. 在 `plugins/tts/` 新建模块  
-2. 继承 `core.runtime.tts.base.BaseTTS`  
-3. `@register(PluginType.TTS, "your_tts")`  
-4. 实现 `txt_to_audio`
-
-### 8.2 新增 ASR
-
-1. 在 `plugins/asr/` 新建模块  
-2. 继承 `core.runtime.asr.base.BaseASR`  
-3. `@register(PluginType.ASR, "your_asr")`  
-4. 实现 `run_step`
-
-### 8.3 新增 Renderer（新 talk 模型）
-
-1. 在 `plugins/renderer/<name>/runtime.py` 实现类  
-2. 继承 `core.runtime.renderer.base.BaseReal` 并注册  
-3. 实现类方法：
-   - `register_dependencies`
-   - `required_plugins`
-   - `prepare_shared`
-   - `create_session`
-4. 在 `render` 中接入主循环
-
----
-
-## 9. 常见排障
-
-- 启动即失败：先看 `validate_startup_plugins` 报错（插件名错误最常见）
-- 首帧慢：确认模型与素材目录完整，首次 warmup 正常
-- 无画面/无音频：先跑 `startup_smoke.sh`，再看 `livetalking.log`
-- 队列堆积：观察日志中的 `rtcpush producer stats` 与 `tmp/frame_monitor/*`
-
----
-
-## 10. 维护约定
-
-- 统一链路：只沿 `tts/asr/renderer` 扩展，不新增兼容分叉
-- 变更后必须执行：
-  1. `py_compile/compileall`
-  2. `startup_smoke.sh`
-- 文档与代码保持同步；架构变化先更新本 README
+更多架构说明见 [docs/refactor/README.md](docs/refactor/README.md)。

@@ -177,7 +177,7 @@ class VideoJobManager:
         session.height, session.width = frame.shape[:2]
         logger.info("video job recorder size set: %dx%d", session.width, session.height)
 
-    async def _drive_session_recording(self, job_id: str, session, text: str, emotion: EMOTION, output_path: Path):
+    async def _drive_session_recording(self, job_id: str, session, text: str, emotion: EMOTION, user_id: str, output_path: Path):
         t_drive_start = time.perf_counter()
         original_batch_size = getattr(session, "batch_size", None)
         if self.context.config.transport.mode == "httpfile" and original_batch_size is not None:
@@ -216,7 +216,7 @@ class VideoJobManager:
             t_record_start = time.perf_counter()
             record_started = True
             logger.info("video job record started: job_id=%s", job_id)
-            session.put_msg_txt(text, {"emo": emotion, "llm_status": "end"})
+            session.put_msg_txt(text, {"emo": emotion, "user_id": user_id, "llm_status": "end"})
 
             started_speaking = False
             last_speaking_ts = time.time()
@@ -331,7 +331,7 @@ class VideoJobManager:
 
         logger.info("video job session created: job_id=%s sessionid=%s user_id=%s", job_id, sessionid, user_id)
         try:
-            asyncio.run(self._drive_session_recording(job_id, session, text, emotion, output_path))
+            asyncio.run(self._drive_session_recording(job_id, session, text, emotion, user_id, output_path))
             return str(output_path)
         finally:
             self.context.nerfreals.pop(sessionid, None)

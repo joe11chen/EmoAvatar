@@ -52,6 +52,8 @@ class TTSConfig:
     ref_text: str | None
     server: str
     max_tokens: int = 120
+    default_male: str = "data/audios/male.wav"
+    default_female: str = "data/audios/female.wav"
 
 
 @dataclass
@@ -82,7 +84,7 @@ class AvatarJobsConfig:
     poll_timeout_sec: int = 900
     positive_prompt_template: str = "a person speaking with {emotion} emotion"
     negative_prompt: str = "low quality, blurry, overexposed, subtitles, text, watermark"
-    continue_on_error: bool = True
+    continue_on_error: bool = False
     input_image_key: str = "601:image"
     input_video_key: str = "640:video"
     positive_prompt_key: str = "648:positive_prompt"
@@ -222,6 +224,8 @@ def load_app_config(config_path: str) -> AppConfig:
         ref_text=None if tts_data.get("ref_text") is None else str(tts_data["ref_text"]),
         server=_as_str(_get_required(tts_data, "server", "tts.server"), "tts.server"),
         max_tokens=_as_int(tts_data.get("max_tokens", 120), "tts.max_tokens"),
+        default_male=_as_str(tts_data.get("default_male", "data/audios/male.wav"), "tts.default_male"),
+        default_female=_as_str(tts_data.get("default_female", "data/audios/female.wav"), "tts.default_female"),
     )
     transport = TransportConfig(
         mode=_as_str(_get_required(transport_data, "mode", "transport.mode"), "transport.mode"),
