@@ -267,9 +267,8 @@ def register_http_routes(appasync: web.Application, context: RuntimeContext) -> 
             params = await request.json()
             text = params.get("text", "")
             emotion = params.get("emotion", "")
-            voice = params.get("voice", "")
             audio_jobs = _audio_jobs_or_raise()
-            job = await audio_jobs.submit(text, emotion, voice, request_perf_ts=request_perf_ts)
+            job = await audio_jobs.submit(text, emotion, request_perf_ts=request_perf_ts)
             return _ok_response({"data": {"job_id": job["job_id"], "status": job["status"]}})
         except Exception as exc:
             return _error_response(exc)

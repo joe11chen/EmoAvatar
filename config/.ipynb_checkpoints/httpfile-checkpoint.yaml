@@ -1,0 +1,52 @@
+runtime:
+  fps: 50
+  sync_window:
+    l: 10
+    m: 8
+    r: 10
+  frame:
+    width: 450
+    height: 450
+
+plugins:
+  tts: indextts2
+  asr: museasr
+  renderer: musetalk
+
+renderer:
+  avatar_id: avator_1
+  user_id: default
+  batch_size: 16
+  customvideo_config: ""
+  multi_avatar: true
+  enabletransition: false
+  frame_monitor_dir: tmp/frame_monitor
+
+tts:
+  ref_file: data/audios/reference.wav
+  ref_text: null
+  server: http://127.0.0.1:7860/
+  max_tokens: 120
+  default_male: data/audios/female.wav
+  default_female: data/audios/female.wav
+
+transport:
+  mode: httpfile
+  push_url: ""
+  rtc_audio_queue_maxsize: 600
+  rtc_video_queue_maxsize: 300
+  httpfile_batch_cap: 8
+
+server:
+  max_session: 1
+  listenport: 6006
+
+avatar_jobs:
+  enable_transition: false
+  continue_on_error: false
+  emotion_prompts:
+    EMOTIONAL_FLOODING: ""
+    RIGID_DEFENSE: ""
+    WAVERING_DOUBT: ""
+    OPEN_ACCEPTANCE: ""
+    RELIEF_GROWTH: ""
